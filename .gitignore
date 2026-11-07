@@ -1,0 +1,50 @@
+# ===== Build artifacts =====
+/target/
+/frontend/dist/
+/frontend/node_modules/
+/installer/Output/
+/dist/
+
+# ===== Runtime data (index, cache, lock) =====
+/data/
+/models/
+*.lock
+# Exception: Cargo.lock MUST be committed for binary applications
+!Cargo.lock
+
+# ===== External runtime binaries (downloaded, not committed) =====
+# pdfium.dll — downloaded by scripts/download-assets.sh
+# OCR model files in models/ocr/ — downloaded by scripts/download-assets.sh
+*.dll
+*.dylib
+
+# ===== Test & scratch files =====
+/testdata/
+/scratch/
+hybrid_test2.json
+*.sqlite3
+*.sqlite3-*
+
+# ===== Prototype & intermediate docs =====
+/prototype/
+/IDEA.md
+/docs/
+
+# ===== Old packaging script (replaced by Inno Setup) =====
+/package.bat
+
+# ===== Agent / IDE working files =====
+/.idea/
+/frontend/.moat/
+/frontend/.claude/
+/frontend/.codex/
+/frontend/.windsurf/
+
+# ===== OS files =====
+.DS_Store
+Thumbs.db
+
+# ===== Editor swap files =====
+*.swp
+*.swo
+*~
