@@ -136,4 +136,4 @@ Memex 作为 MCP server 暴露 4 个工具：
 
 ## 📝 License
 
-自用 / 内部使用
+Apache-2.0
