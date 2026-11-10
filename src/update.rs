@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// Repository paths — set these after creating the repos.
-const GITEE_API: &str = "https://gitee.com/api/v5/repos/__OWNER__/memex/releases/latest";
-const GITHUB_API: &str = "https://api.github.com/repos/__OWNER__/memex/releases/latest";
+/// Repository paths (owners differ between platforms).
+const GITEE_API: &str = "https://gitee.com/api/v5/repos/JohenTeng/memex/releases/latest";
+const GITHUB_API: &str = "https://api.github.com/repos/JohenDeng/memex/releases/latest";
 
 /// Progress tracking for download (polled via cmd_update_progress).
 pub static DL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -69,25 +69,18 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
-/// Check for updates. Tries Gitee first, then GitHub.
-/// `owner` is the username on both platforms (e.g. "JohenDeng").
-///
-/// Returns `Ok(UpdateInfo)` on success (has_update may be false = up to date).
-/// Returns `Err` only when all sources are genuinely unreachable (network/DNS/timeout)
-/// — a 404 (repo not yet created / no releases published) is treated as "no update"
-/// and silently returns an up-to-date result instead of erroring.
-pub fn check_update(owner: &str) -> Result<UpdateInfo> {
+pub fn check_update() -> Result<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
 
     // Try Gitee first (Ok(None) = 404, silent fallthrough; Err = real network error)
-    match check_gitee(owner, &current) {
+    match check_gitee(&current) {
         Ok(Some(info)) => return Ok(info),
         Ok(None) => {}
         Err(e) => eprintln!("[update] gitee check failed: {e}"),
     }
 
     // Fallback to GitHub
-    match check_github(owner, &current) {
+    match check_github(&current) {
         Ok(Some(info)) => return Ok(info),
         Ok(None) => {}
         Err(e) => eprintln!("[update] github check failed: {e}"),
@@ -106,13 +99,12 @@ pub fn check_update(owner: &str) -> Result<UpdateInfo> {
     })
 }
 
-fn check_gitee(owner: &str, current: &str) -> Result<Option<UpdateInfo>> {
-    let url = GITEE_API.replace("__OWNER__", owner);
+fn check_gitee(current: &str) -> Result<Option<UpdateInfo>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .user_agent("Memex")
         .build()?;
-    let resp = client.get(&url).send()?;
+    let resp = client.get(GITEE_API).send()?;
     // 404 = repo not created / no releases yet → treat as "no update" (silent).
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
@@ -143,13 +135,12 @@ fn check_gitee(owner: &str, current: &str) -> Result<Option<UpdateInfo>> {
     }))
 }
 
-fn check_github(owner: &str, current: &str) -> Result<Option<UpdateInfo>> {
-    let url = GITHUB_API.replace("__OWNER__", owner);
+fn check_github(current: &str) -> Result<Option<UpdateInfo>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .user_agent("Memex")
         .build()?;
-    let resp = client.get(&url).send()?;
+    let resp = client.get(GITHUB_API).send()?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -272,8 +263,8 @@ pub fn install_update(installer_path: &PathBuf) -> Result<()> {
 /// - Up to date (repos exist, same version): one info line.
 /// - New version available: logged.
 /// - Real network error: logged.
-pub fn auto_check(owner: &str) {
-    let result = match check_update(owner) {
+pub fn auto_check() {
+    let result = match check_update() {
         Ok(info) => {
             if info.has_update {
                 eprintln!(

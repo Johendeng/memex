@@ -9,6 +9,16 @@ use std::path::{Path, PathBuf};
 fn main() {
     // Only needed on Windows (wry uses WebView2 there).
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "windows" {
+        // Embed application icon into the .exe (Windows PE resource).
+        // This makes Explorer / shortcuts show the correct icon.
+        if let Err(e) = winres::WindowsResource::new()
+            .set_icon("assets/memex_icon.ico")
+            .compile()
+        {
+            println!("cargo:warning=winres failed to embed icon: {e}");
+        }
+    }
     if target_os != "windows" {
         return;
     }

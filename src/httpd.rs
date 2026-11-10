@@ -647,7 +647,7 @@ fn dispatch(
 name: memex
 command: {exe}
 args: ["mcp", "serve"]
-description: Memex 本地知识库检索 — 在已索引的本地文件中做全文检索、读取解析文本、打标和置信度报告。四个工具：memex_search / memex_read / memex_tag / memex_report_confidence。
+description: Memex 本地知识库与 AI 记忆体 — 全文检索、记忆存储、笔记管理、文件打标。13 个工具：memex_search / memex_read / memex_tag / memex_report_confidence / memex_find_similar / memex_remember / memex_recall / memex_forget / memex_write_note / memex_list_notes / memex_read_note / memex_delete_note / memex_stats。
 "#
             );
             serde_json::json!({ "prompt": prompt })
@@ -661,8 +661,183 @@ description: Memex 本地知识库检索 — 在已索引的本地文件中做�
 name: memex-http
 url: {url}
 transport: http
-description: Memex 本地知识库检索（HTTP 模式）— 在已索引的本地文件中做全文检索、读取解析文本、打标和置信度报告。四个工具：memex_search / memex_read / memex_tag / memex_report_confidence。需要 Memex serve 正在运行。
+description: Memex 本地知识库（HTTP 模式）— 全文检索、记忆存储、笔记管理。需要 Memex serve 正在运行。
 "#
+            );
+            serde_json::json!({ "prompt": prompt })
+        }
+        "cmd_gen_agent_prompt" => {
+            let exe = std::env::current_exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "memex.exe".to_string());
+            let port = SERVE_PORT.load(Ordering::Relaxed);
+            let http_url = format!("http://127.0.0.1:{port}/mcp");
+            let exe_fwd = exe.replace('\\', "/");
+            let prompt = format!(
+r#"# Memex — 本地知识库与 AI 记忆体
+
+## 简介
+
+Memex 是一个本地运行的知识库系统，为 AI Agent 提供持久化记忆和文档检索能力。它自动索引你电脑上的文档（PDF/Word/PPT/Markdown/图片 OCR 等），提供 BM25 + 语义向量混合检索，并通过 MCP 协议向 Agent 暴露 13 个工具，实现记忆存储、笔记管理、文档检索等能力。
+
+Memex 的设计理念：Agent 是用户的"记忆扩展器"——主动判断什么值得记住，什么时候该回忆，用户零操作。
+
+## 核心能力
+
+1. **文档索引与检索**：自动解析 PDF/DOCX/PPTX/XLSX/MD/TXT/图片（OCR），bigram 关键词 + BGE 语义向量 + RRF 融合
+2. **重复文件检测**：SHA-256 全文去重，路径最浅保留
+3. **多维分类归档**：维度+值标签体系，Agent 和用户均可打标
+4. **KV 记忆存储**：轻量级键值记忆，Agent 的"长期记忆"
+5. **Markdown 笔记**：结构化笔记，可搜索可读取
+6. **OCR 识别**：PaddleOCR PP-OCRv6 模型，图片文字提取
+7. **PDF 渲染**：pdfium 引擎，复杂 PDF 文本提取
+8. **数据导出**：JSON/CSV 导出，便于迁移
+
+## MCP 注册
+
+### 方式一：stdio（推荐，所有 MCP client 通用）
+
+Agent 的 MCP 配置中添加：
+
+```json
+{{
+  "mcpServers": {{
+    "memex": {{
+      "command": "{exe}",
+      "args": ["mcp", "serve"]
+    }}
+  }}
+}}
+```
+
+#### Claude Desktop 配置示例
+
+编辑 `~/AppData/Roaming/Claude/claude_desktop_config.json`：
+
+```json
+{{
+  "mcpServers": {{
+    "memex": {{
+      "command": "{exe}",
+      "args": ["mcp", "serve"]
+    }}
+  }}
+}}
+```
+
+#### Cursor 配置示例
+
+Settings → MCP → Add New MCP Server：
+- Name: `memex`
+- Type: `stdio`
+- Command: `{exe_fwd} mcp serve`
+
+#### Hermes Agent 配置示例
+
+在 MCP servers 配置中添加：
+```yaml
+- name: memex
+  command: {exe}
+  args: ["mcp", "serve"]
+```
+
+### 方式二：HTTP（适用于支持 HTTP transport 的 agent）
+
+MCP endpoint: `POST {http_url}`
+协议：JSON-RPC 2.0
+
+需要 Memex 以 serve 模式运行（`memex serve` 或桌面应用已启动）。
+
+### 选择建议
+
+- 单一 Agent、本地使用 → **方式一（stdio）**
+- 多 Agent 共享、Memex 已常驻 → **方式二（HTTP）**
+- 拿不准 → 方式一
+
+## 工具列表（13 个）
+
+### 检索类
+
+| 工具 | 说明 |
+|------|------|
+| `memex_search` | 在已索引文件中检索（BM25 + 语义向量 + RRF 融合）。hybrid=true 启用语义检索 |
+| `memex_find_similar` | 查找与指定文件语义相似的文档（向量余弦相似度） |
+| `memex_read` | 读取已索引文件的解析文本。verified 文件直接返回缓存 |
+
+### 记忆类
+
+| 工具 | 说明 |
+|------|------|
+| `memex_remember` | 存储键值记忆（Agent 长期记忆）。同一 key+namespace 更新而非重复 |
+| `memex_recall` | 检索记忆。按 key 精确或关键词模糊搜索 |
+| `memex_forget` | 删除一条记忆 |
+
+### 笔记类
+
+| 工具 | 说明 |
+|------|------|
+| `memex_write_note` | 写入 Markdown 笔记到 `data/notes/<title>.md` |
+| `memex_list_notes` | 列出所有笔记（标题、大小、修改时间、预览） |
+| `memex_read_note` | 读取笔记完整内容 |
+| `memex_delete_note` | 删除一条笔记 |
+
+### 管理类
+
+| 工具 | 说明 |
+|------|------|
+| `memex_tag` | 为文件打标签（维度+值），用于多维分类 |
+| `memex_report_confidence` | 报告文件解析置信度（0-1），≥0.85 标记 verified |
+| `memex_stats` | 知识库统计概览（文件数、chunk 数、标签分布等） |
+
+## 调用时机说明
+
+### 何时主动检索（无需用户指示）
+
+- **任务开始时**：`memex_recall` 查相关上下文（用户偏好、项目背景、历史决策）
+- **用户问的问题可能已有记录时**：`memex_search` 搜本地知识库
+- **做决策前**：`memex_recall` 查有没有相关约束或先前的决策
+- **用户提到项目/人名/技术名词时**：`memex_search` 看知识库有没有相关文档
+
+### 何时不要检索
+
+- 翻译、格式化、算术等通用任务
+- 常识性问题
+- 与用户领域完全无关的任务
+
+### 何时主动保存（无需用户指示）
+
+- **用户表达了偏好、约束或工作习惯** → `memex_remember`
+- **做了决策及理由**（选 A 不选 B，为什么）→ `memex_remember`
+- **解决了非平凡问题**（记录方案结论，不是排查过程）→ `memex_remember` 或 `memex_write_note`
+- **用户透露了环境、项目、团队的关键事实** → `memex_remember`
+- **下次对话需要知道才能有效的上下文** → `memex_remember`
+
+### 何时不要保存
+
+- 闲聊、临时调试信息、一次性操作
+- 知识库中已有的内容
+- 用户能轻易重新推导的信息
+
+### 两层存储分工
+
+| 存储 | 工具 | 粒度 | 触发 |
+|------|------|------|------|
+| KV 记忆 | `memex_remember` | 一句话事实/偏好/决策 | Agent 自主，高频 |
+| Markdown 笔记 | `memex_write_note` | 详细内容/方案/纪要 | 用户显式为主，低频 |
+
+### 显式指令
+
+用户说"记住"/"保存这个"时，Agent 无条件执行 `memex_remember`。
+用户说"写笔记"/"记录方案"时，Agent 使用 `memex_write_note`。
+
+### 会话末回顾
+
+对话结束前，Agent 简要列出本轮保存的记忆和笔记，供用户清理。
+事后清理比事前确认体验更好——不打断当前流程。
+"#,
+                exe = exe,
+                exe_fwd = exe_fwd,
+                http_url = http_url,
             );
             serde_json::json!({ "prompt": prompt })
         }
@@ -688,6 +863,13 @@ description: Memex 本地知识库检索（HTTP 模式）— 在已索引的本�
             } else {
                 0
             };
+            let ocr_total = indexer::PROGRESS_OCR_TOTAL.load(Ordering::Relaxed);
+            let ocr_done = indexer::PROGRESS_OCR_DONE.load(Ordering::Relaxed);
+            let ocr_percent = if ocr_total > 0 {
+                ocr_done * 100 / ocr_total
+            } else {
+                0
+            };
             serde_json::json!({
                 "total": total,
                 "done": done,
@@ -698,12 +880,14 @@ description: Memex 本地知识库检索（HTTP 模式）— 在已索引的本�
                 "content_total": content_total,
                 "content_done": content_done,
                 "content_percent": content_percent,
+                "ocr_total": ocr_total,
+                "ocr_done": ocr_done,
+                "ocr_percent": ocr_percent,
             })
         }
         // ---- update check / download / install ----
         "cmd_check_update" => {
-            let owner = args.get("owner").and_then(|v| v.as_str()).unwrap_or("JohenDeng");
-            match crate::update::check_update(owner) {
+            match crate::update::check_update() {
                 Ok(info) => serde_json::json!({
                     "ok": true,
                     "current": info.current,
@@ -998,6 +1182,49 @@ description: Memex 本地知识库检索（HTTP 模式）— 在已索引的本�
             let notes = crate::memories::list_notes()
                 .map_err(|e| anyhow::anyhow!("list notes: {e}"))?;
             serde_json::json!({ "ok": true, "notes": notes })
+        }
+        // ---- Read a single note ----
+        "cmd_read_note" => {
+            let title = args.get("title").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing title"))?;
+            let content = crate::memories::read_note(title)
+                .map_err(|e| anyhow::anyhow!("read note: {e}"))?;
+            serde_json::json!({ "ok": true, "content": content })
+        }
+        // ---- Delete a note ----
+        "cmd_delete_note" => {
+            let title = args.get("title").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing title"))?;
+            let deleted = crate::memories::delete_note(title)
+                .map_err(|e| anyhow::anyhow!("delete note: {e}"))?;
+            serde_json::json!({ "ok": true, "deleted": deleted })
+        }
+        // ---- Delete a KV memory ----
+        "cmd_delete_memory" => {
+            let key = args.get("key").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing key"))?;
+            let namespace = args.get("namespace").and_then(|v| v.as_str()).unwrap_or("");
+            let mut store = crate::memories::MemoryStore::load()
+                .map_err(|e| anyhow::anyhow!("load memories: {e}"))?;
+            let deleted = store.forget(key, namespace);
+            if deleted {
+                store.save().map_err(|e| anyhow::anyhow!("save memories: {e}"))?;
+            }
+            serde_json::json!({ "ok": true, "deleted": deleted, "count": store.memories.len() })
+        }
+        // ---- Upsert a KV memory (manual add/edit) ----
+        "cmd_save_memory" => {
+            let key = args.get("key").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing key"))?;
+            let value = args.get("value").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing value"))?;
+            let namespace = args.get("namespace").and_then(|v| v.as_str()).unwrap_or("default");
+            let note = args.get("note").and_then(|v| v.as_str());
+            let mut store = crate::memories::MemoryStore::load()
+                .map_err(|e| anyhow::anyhow!("load memories: {e}"))?;
+            let updated = store.upsert(key, value, namespace, note);
+            store.save().map_err(|e| anyhow::anyhow!("save memories: {e}"))?;
+            serde_json::json!({ "ok": true, "updated": updated, "count": store.memories.len() })
         }
         other => serde_json::json!({ "error": format!("unknown cmd: {other}") }),
     })

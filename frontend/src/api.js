@@ -74,7 +74,8 @@ export const api = {
   },
   mcp: {
     prompt: () => call('cmd_mcp_prompt'),
-    httpPrompt: () => call('cmd_mcp_http_prompt')
+    httpPrompt: () => call('cmd_mcp_http_prompt'),
+    agentPrompt: () => call('cmd_gen_agent_prompt')
   },
   update: {
     check: () => call('cmd_check_update'),
@@ -90,5 +91,16 @@ export const api = {
     memories: () => call('cmd_export_memories'),
     importTags: (tags) => call('cmd_import_tags', { tags }),
     listNotes: () => call('cmd_list_notes'),
+  },
+  // ---- Agent memory management ----
+  memory: {
+    list: () => call('cmd_export_memories'),
+    save: (key, value, namespace = 'default', note = null) => call('cmd_save_memory', { key, value, namespace, note }),
+    delete: (key, namespace = '') => call('cmd_delete_memory', { key, namespace }),
+  },
+  notes: {
+    list: () => call('cmd_list_notes'),
+    read: (title) => call('cmd_read_note', { title }),
+    delete: (title) => call('cmd_delete_note', { title }),
   },
 }

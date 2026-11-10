@@ -106,7 +106,7 @@ fn handle_tools_list() -> Value {
     let tools = json!([
         {
             "name": "memex_search",
-            "description": "在已索引的本地文件中检索（bigram 关键词 + bge-small-zh 语义向量 + RRF 融合）。返回命中文件的路径、片段、标签和置信度。hybrid=true 时启用语义检索（需先运行 memex embed）。",
+            "description": "在已索引的本地文件中检索（bigram 关键词 + bge-small-zh 语义向量 + RRF 融合）。返回命中文件的路径、片段、标签和置信度。hybrid=true 时启用语义检索（需先运行 memex embed）。\n\n【何时主动检索】\n• 用户问的问题可能已有文档记录时\n• 用户提到项目/人名/技术名词，想看是否有相关资料\n• 需要查找本地文件中的具体内容或数据\n• 做决策前，查找是否有相关文档支撑",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -157,7 +157,7 @@ fn handle_tools_list() -> Value {
         },
         {
             "name": "memex_write_note",
-            "description": "📝 写入一条 Markdown 笔记到知识库（data/notes/<title>.md）。笔记持久保存，可被 Agent 后续搜索和读取。这是本地记忆体的核心写入能力——记录洞察、决策、方案、会议纪要等。",
+            "description": "📝 写入 Markdown 笔记到知识库（data/notes/<title>.md）。笔记持久保存，可被 Agent 后续搜索和读取。这是本地记忆体的核心写入能力。\n\n【与 memex_remember 的分工】\n• remember = 一句话事实/偏好/决策（轻量，Agent 自主高频保存）\n• write_note = 需要展开的详细内容（重量，以用户显式要求为主）\n\n【何时使用】\n• 用户说\"写笔记\"/\"记录方案\"/\"保存这个到笔记\"\n• 方案设计、技术调研、问题分析结论、会议纪要（内容超过几句话）\n• Agent 解决了复杂问题后，可将方案结论整理成笔记（门槛高于 remember）\n\n对话结束前，如本轮写过笔记，简要列出供用户审阅。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -203,7 +203,7 @@ fn handle_tools_list() -> Value {
         },
         {
             "name": "memex_remember",
-            "description": "🧠 存储一条键值记忆（KV store）。用于持久化事实、偏好、决策、上下文等。同一 key+namespace 会更新而非重复插入。这是 Agent 的长期记忆。",
+            "description": "🧠 存储一条键值记忆（Agent 的长期记忆）。Agent 应主动判断何时保存，无需用户指示。同一 key+namespace 会更新而非重复插入。\n\n【何时主动保存（高门槛）】\n• 用户表达了偏好、约束或工作习惯\n• 做了决策及理由（选 A 不选 B，为什么）\n• 解决了非平凡问题（记录方案结论，不是排查过程）\n• 用户透露了环境、项目、团队的关键事实\n• 下次对话需要知道才能有效的上下文\n\n【何时不要保存】\n• 闲聊、临时调试信息、一次性操作\n• 知识库中已有的内容\n• 用户能轻易重新推导的信息\n\n用户显式说\"记住\"/\"保存这个\"时无条件执行。\n对话结束前，简要列出本轮保存的记忆，供用户清理。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -217,7 +217,7 @@ fn handle_tools_list() -> Value {
         },
         {
             "name": "memex_recall",
-            "description": "🔍 检索记忆。可按 key 精确查找，或按关键词模糊搜索 key 和 value。不传 key/query 时列出全部记忆。",
+            "description": "🔍 检索 Agent 存储的记忆。可按 key 精确查找，或按关键词模糊搜索 key 和 value。不传 key/query 时列出全部记忆。\n\n【何时主动检索】\n• 任务开始时：查用户偏好、项目背景、历史决策\n• 做决策前：查是否有相关约束或先前的决策\n• 用户提到之前的对话内容或要求时",
             "inputSchema": {
                 "type": "object",
                 "properties": {

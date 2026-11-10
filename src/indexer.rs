@@ -22,6 +22,10 @@ pub static PROGRESS_PHASE: AtomicU8 = AtomicU8::new(0);
 pub static PROGRESS_CONTENT_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static PROGRESS_CONTENT_DONE: AtomicU64 = AtomicU64::new(0);
 
+/// OCR-specific progress (subset of content phase, tracked for UI).
+pub static PROGRESS_OCR_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static PROGRESS_OCR_DONE: AtomicU64 = AtomicU64::new(0);
+
 /// Set by background thread when Meta changed on disk; serve thread checks
 /// this and reloads Meta before the next API call.
 pub static META_DIRTY: AtomicBool = AtomicBool::new(false);
@@ -282,6 +286,19 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
     PROGRESS_CONTENT_TOTAL.store(total, Ordering::Relaxed);
     PROGRESS_CONTENT_DONE.store(0, Ordering::Relaxed);
 
+    // OCR progress: count image files among the pending set
+    let ocr_total = to_index
+        .iter()
+        .filter(|f| {
+            Path::new(&f.rel_path)
+                .extension()
+                .map(|e| parser::is_image_ext(&e.to_string_lossy().to_lowercase()))
+                .unwrap_or(false)
+        })
+        .count() as u64;
+    PROGRESS_OCR_TOTAL.store(ocr_total, Ordering::Relaxed);
+    PROGRESS_OCR_DONE.store(0, Ordering::Relaxed);
+
     if total == 0 {
         return Ok(());
     }
@@ -299,6 +316,11 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
         let full_path = format!("{}/{}", folder_path, file.rel_path);
         *PROGRESS_CURRENT.lock().unwrap() = Some(full_path.clone());
 
+        let is_img = Path::new(&file.rel_path)
+            .extension()
+            .map(|e| parser::is_image_ext(&e.to_string_lossy().to_lowercase()))
+            .unwrap_or(false);
+
         let text = match parser::extract_text(Path::new(&full_path)) {
             Ok(t) => t,
             Err(e) => {
@@ -313,6 +335,9 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
                 done += 1;
                 processed_ids.insert(file.id);
                 PROGRESS_CONTENT_DONE.store(done, Ordering::Relaxed);
+                if is_img {
+                    PROGRESS_OCR_DONE.fetch_add(1, Ordering::Relaxed);
+                }
                 if (done as usize) % SAVE_BATCH == 0 {
                 flush_batch(&mut pending_replacements, idx, meta, &processed_ids);
                 }
@@ -332,6 +357,9 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
         done += 1;
         processed_ids.insert(file.id);
         PROGRESS_CONTENT_DONE.store(done, Ordering::Relaxed);
+        if is_img {
+            PROGRESS_OCR_DONE.fetch_add(1, Ordering::Relaxed);
+        }
 
         // Save every SAVE_BATCH files
         if (done as usize) % SAVE_BATCH == 0 {
@@ -343,6 +371,13 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
     flush_batch(&mut pending_replacements, idx, meta, &processed_ids);
 
     eprintln!("content indexing done: {} files ({} failed)", done, failed);
+    if ocr_total > 0 {
+        eprintln!(
+            "ocr progress: {}/{} images processed",
+            PROGRESS_OCR_DONE.load(Ordering::Relaxed),
+            ocr_total
+        );
+    }
 
     // Auto-trigger embedding after content indexing completes (Q1=A)
     if done > 0 {

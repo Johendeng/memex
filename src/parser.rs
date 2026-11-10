@@ -457,3 +457,11 @@ fn local_name<'a>(name: quick_xml::name::QName<'a>) -> &'a str {
         None => std::str::from_utf8(full).unwrap_or(""),
     }
 }
+
+/// Check if a file extension is an image type (always compiled, even without `ocr` feature).
+pub fn is_image_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" | "webp"
+    )
+}

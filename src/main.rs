@@ -1,3 +1,4 @@
+mod applog;
 mod config;
 mod update;
 mod memories;
@@ -29,7 +30,7 @@ use store::{add_folder, index_bigrams, remove_folder, BigramIndex, Meta};
 #[command(name = "memex", version, about = "Memex — local knowledge base indexer (M1)")]
 struct Cli {
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -104,7 +105,9 @@ enum McpAction {
 }
 
 fn main() -> ExitCode {
+    applog::log("=== memex starting ===");
     if let Err(e) = run() {
+        applog::log(&format!("FATAL: {e:#}"));
         eprintln!("error: {e:#}");
         ExitCode::FAILURE
     } else {
@@ -117,7 +120,13 @@ fn run() -> Result<()> {
     let mut meta = Meta::load()?;
 
     match &cli.cmd {
-        Cmd::Info => {
+        None => {
+            // No subcommand → show the GUI mode selector (desktop shortcut path).
+            // Note: do NOT acquire the single-instance lock here; the spawned
+            // `serve` child acquires it and prints "already running" if needed.
+            window::run_mode_selector()?;
+        }
+        Some(Cmd::Info) => {
             let idx = BigramIndex::load()?;
             println!(
                 "Memex index: {} folders, {} files, {} chunks, {} bigrams",
@@ -131,7 +140,7 @@ fn run() -> Result<()> {
             }
         }
 
-        Cmd::Folders { action } => match action {
+        Some(Cmd::Folders { action }) => match action {
             FoldersAction::Add { path } => {
                 let id = add_folder(&mut meta, path)?;
                 meta.save()?;
@@ -152,7 +161,7 @@ fn run() -> Result<()> {
             }
         },
 
-        Cmd::Filter { action } => match action {
+        Some(Cmd::Filter { action }) => match action {
             FilterAction::Show => {
                 println!("{}", serde_json::to_string_pretty(&meta.filter_rules)?);
             }
@@ -163,7 +172,7 @@ fn run() -> Result<()> {
             }
         },
 
-        Cmd::Index => {
+        Some(Cmd::Index) => {
             let stats = indexer::index_all(&mut meta)?;
             println!(
                 "indexed: {} files, {} chunks (scanned {}, skipped {}, failed {})",
@@ -171,7 +180,7 @@ fn run() -> Result<()> {
             );
         }
 
-        Cmd::RebuildPostings => {
+        Some(Cmd::RebuildPostings) => {
             let mut idx = BigramIndex::load()?;
             println!("rebuilding postings from {} chunks...", idx.chunks.len());
             // Drop mmap/index, start fresh
@@ -197,15 +206,15 @@ fn run() -> Result<()> {
             println!("done: postings.bin rebuilt, mmap reloaded ({} bigrams)", idx.postings_index.len());
         }
 
-        Cmd::Embed => {
+        Some(Cmd::Embed) => {
             embed::embed_all()?;
         }
 
-        Cmd::Search {
+        Some(Cmd::Search {
             query,
             limit,
             hybrid,
-        } => {
+        }) => {
             let idx = BigramIndex::load()?;
             let hits = if *hybrid {
                 let vec_idx = vector::VectorIndex::load()?;
@@ -237,7 +246,7 @@ fn run() -> Result<()> {
             }
         }
 
-        Cmd::Read { file_id } => {
+        Some(Cmd::Read { file_id }) => {
             let idx = BigramIndex::load()?;
             let chunks: Vec<String> = idx
                 .chunks
@@ -257,30 +266,38 @@ fn run() -> Result<()> {
             }
         }
 
-        Cmd::Mcp { action } => match action {
+        Some(Cmd::Mcp { action }) => match action {
             McpAction::Serve => {
                 mcp::serve()?;
             }
         },
 
-        Cmd::Serve { port, open, no_window } => {
+        Some(Cmd::Serve { port, open, no_window }) => {
+            applog::log(&format!("serve: port={port} no_window={no_window} open={open}"));
             // Single-instance guard: refuse to start a second service
             // process. The lock file is released on clean exit (Drop).
             if let Some(existing_pid) = single_instance::acquire_lock()? {
+                applog::log(&format!("already running as PID {existing_pid}; exiting"));
                 eprintln!(
                     "already running as PID {existing_pid}; exiting (single-instance mode)."
                 );
                 return Ok(());
             }
+            applog::log("lock acquired");
 
             if *no_window {
+                applog::log("starting tray-only mode");
                 window::run_tray_only(*port)?;
+                applog::log("tray-only exited");
                 single_instance::release_lock();
             } else if *open {
+                applog::log("starting browser mode");
                 httpd::serve(*port, true)?;
                 single_instance::release_lock();
             } else {
+                applog::log("starting window mode");
                 window::run_window(*port)?;
+                applog::log("window mode exited");
             }
         }
     }

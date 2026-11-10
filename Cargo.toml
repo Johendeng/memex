@@ -68,6 +68,9 @@ default = []
 pdfium = ["dep:pdfium-render"]
 ocr = ["dep:rusto-rs", "dep:image"]
 
+[build-dependencies]
+winres = "0.1"
+
 [profile.release]
 lto = true
 strip = true

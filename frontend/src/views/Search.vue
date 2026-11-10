@@ -86,8 +86,12 @@
     <div v-if="menu" class="ctx-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
       <div class="ctx-item" v-if="isPreviewable(menu.hit)" @click="previewHit(menu.hit)">预览</div>
       <div class="ctx-item" v-if="vecReady" @click="findSimilar(menu.hit)">查找相似文档</div>
-      <div class="ctx-item" @click="copyPath">复制文件地址</div>
+      <div class="ctx-sep"></div>
       <div class="ctx-item" @click="openFile">打开文件</div>
+      <div class="ctx-item" @click="openFolder">打开文件所在文件夹</div>
+      <div class="ctx-sep"></div>
+      <div class="ctx-item" @click="copyPath">复制文件地址</div>
+      <div class="ctx-item" @click="copyFolderPath">复制文件所在文件夹</div>
     </div>
 
     <MarkdownPreview
@@ -182,6 +186,30 @@ async function openFile() {
   menu.value = null
   try { await api.openFile(p) }
   catch (e) { msg.value = e.message }
+}
+
+async function openFolder() {
+  const p = menu.value?.path || ''
+  menu.value = null
+  try { await api.openFolder(p) }
+  catch (e) { msg.value = e.message }
+}
+
+function getFolderPath(p) {
+  const normalized = p.replace(/\//g, '\\')
+  const idx = normalized.lastIndexOf('\\')
+  return idx >= 0 ? normalized.slice(0, idx) : ''
+}
+
+async function copyFolderPath() {
+  const p = getFolderPath(menu.value?.path || '')
+  menu.value = null
+  try { await navigator.clipboard.writeText(p) }
+  catch (_) {
+    const ta = document.createElement('textarea')
+    ta.value = p; document.body.appendChild(ta); ta.select()
+    document.execCommand('copy'); document.body.removeChild(ta)
+  }
 }
 
 async function openHit(h) {
@@ -366,8 +394,9 @@ async function doEmbed() {
 }
 .ctx-item { padding: 7px 14px; font-size: 13px; cursor: pointer; color: #e6e8eb; }
 .ctx-item:hover { background: rgba(245,158,11,0.12); }
+.ctx-sep { height: 1px; background: #2a2d33; margin: 4px 0; }
 
-.search-bar .input { flex: 1; width: auto; }
+.search-bar .input { width: 100%; }
 .search-bar .btn { flex-shrink: 0; white-space: nowrap; }
 .search-info { font-size: 12px; color: var(--muted); margin-top: 8px; }
 

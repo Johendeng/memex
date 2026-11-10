@@ -58,20 +58,18 @@ Source: "..\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubd
 Source: "..\models\ocr\*"; DestDir: "{app}\models\ocr"; Flags: ignoreversion skipifsourcedoesntexist
 ; README
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion
-; Launcher (desktop shortcut target — shows mode selection menu)
-Source: "launcher.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 ; Create empty data directory (runtime will populate)
 Name: "{app}\data"
 
 [Icons]
-Name: "{autodesktop}\Memex"; Filename: "{app}\launcher.bat"; WorkingDir: "{app}"; IconFilename: "{app}\memex.exe"; Tasks: desktopicon; Comment: "Memex 本地知识库"
+Name: "{autodesktop}\Memex"; Filename: "{app}\memex.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Comment: "Memex 本地知识库"
 Name: "{autostartup}\Memex"; Filename: "{app}\memex.exe"; WorkingDir: "{app}"; Parameters: "serve --no-window"; Tasks: startupicon; Comment: "Memex 本地知识库（后台模式）"
 
 [Run]
-; Launch after install (optional, user can uncheck)
-Filename: "{app}\launcher.bat"; WorkingDir: "{app}"; Description: "立即启动 Memex"; Flags: nowait postinstall skipifsilent
+; Launch after install (optional, user can uncheck) — shows GUI mode selector
+Filename: "{app}\memex.exe"; WorkingDir: "{app}"; Description: "立即启动 Memex"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Kill the process before uninstalling

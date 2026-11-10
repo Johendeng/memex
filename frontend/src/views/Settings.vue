@@ -1,6 +1,40 @@
 <template>
   <div class="col">
     <HelpTour :steps="tourSteps" />
+
+    <!-- Agent 介绍 Prompt — 置顶 -->
+    <div class="card" id="set-agent-prompt" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <div>
+        <span class="card-title">AI 智能体接入</span>
+        <p class="muted" style="font-size:12px;margin:4px 0 0">生成完整的 Agent 介绍 Prompt（能力说明 + MCP 注册 + 调用时机），一键复制给智能体。</p>
+      </div>
+      <button class="btn" @click="genAgentPrompt" :disabled="agentPromptLoading" style="white-space:nowrap;flex-shrink:0">
+        {{ agentPromptLoading ? '生成中…' : '生成 Agent 介绍 Prompt' }}
+      </button>
+    </div>
+
+    <!-- Agent Prompt 弹窗（全局） -->
+    <div v-if="agentPromptModal" class="modal-overlay" @click.self="agentPromptModal = false">
+      <div class="modal-box" style="max-width:800px">
+        <div class="row between" style="margin-bottom:12px">
+          <h3 style="margin:0">Agent 介绍 Prompt</h3>
+          <div class="row" style="gap:8px">
+            <button class="btn ghost" style="padding:4px 12px;font-size:12px" @click="copyAgentPrompt">
+              {{ agentPromptCopied ? '已复制 ✓' : '复制到剪贴板' }}
+            </button>
+            <button class="btn ghost" style="padding:4px 12px;font-size:12px" @click="agentPromptModal = false">关闭</button>
+          </div>
+        </div>
+        <textarea
+          v-model="agentPromptText"
+          rows="28"
+          class="input mono"
+          style="font-size:12px;resize:vertical;line-height:1.6"
+          readonly
+        ></textarea>
+      </div>
+    </div>
+
     <FolderSources />
 
     <div class="card" id="set-filter">
@@ -45,22 +79,16 @@
     <div class="card" id="set-mcp">
       <span class="card-title">MCP 集成</span>
       <p class="muted" style="font-size:12px;margin-bottom:12px;line-height:1.8">
-        Memex 通过 MCP 协议向 AI 智能体开放知识库能力，智能体可在对话中直接调用以下工具：<br/>
-        <span class="mono">memex_search</span> — 按关键词或语义搜索知识库，返回匹配文件、高亮摘要和路径<br/>
-        <span class="mono">memex_read</span> — 读取指定文件的完整解析文本，用于深入分析内容<br/>
-        <span class="mono">memex_tag</span> — 为文件打标签（维度 + 值），实现多维分类归档<br/>
-        <span class="mono">memex_report_confidence</span> — 上报文件解析置信度（0–1），低于 0.85 标记待复核<br/>
-        点击下方按钮生成配置，粘贴到智能体即可注册使用。
+        Memex 通过 MCP 协议向 AI 智能体开放知识库能力（13 个工具：检索/记忆/笔记/管理）。<br/>
+        点击下方按钮生成仅 MCP 注册配置（stdio + HTTP），粘贴到智能体即可注册。
       </p>
       <div class="row" style="gap:8px;margin-bottom:12px">
-        <button class="btn" @click="genMcpPrompt">生成 MCP 配置 Prompt</button>
-        <button class="btn ghost" :disabled="!mcpPrompt" @click="copyMcpPrompt">复制到剪贴板</button>
-        <span class="muted" v-if="mcpCopied" style="font-size:12px">已复制 ✓</span>
+        <button class="btn ghost" @click="genMcpPrompt">仅 MCP 注册配置</button>
       </div>
       <textarea
         v-if="mcpPrompt"
         v-model="mcpPrompt"
-        rows="16"
+        rows="10"
         class="input mono"
         style="font-size:12px;resize:vertical"
         readonly
@@ -204,6 +232,10 @@ const globs = ref('')
 const msg = ref('')
 const mcpPrompt = ref('')
 const mcpCopied = ref(false)
+const agentPromptLoading = ref(false)
+const agentPromptModal = ref(false)
+const agentPromptText = ref('')
+const agentPromptCopied = ref(false)
 
 // model/embed status
 const vecReady = ref(false)
@@ -334,6 +366,29 @@ async function copyMcpPrompt() {
     await navigator.clipboard.writeText(mcpPrompt.value)
     mcpCopied.value = true
     setTimeout(() => { mcpCopied.value = false }, 2000)
+  } catch (_) {}
+}
+
+async function genAgentPrompt() {
+  agentPromptLoading.value = true
+  agentPromptCopied.value = false
+  try {
+    const r = await api.mcp.agentPrompt()
+    agentPromptText.value = r.prompt
+    agentPromptModal.value = true
+  } catch (e) {
+    agentPromptText.value = '// 生成失败: ' + e.message
+    agentPromptModal.value = true
+  } finally {
+    agentPromptLoading.value = false
+  }
+}
+
+async function copyAgentPrompt() {
+  try {
+    await navigator.clipboard.writeText(agentPromptText.value)
+    agentPromptCopied.value = true
+    setTimeout(() => { agentPromptCopied.value = false }, 2000)
   } catch (_) {}
 }
 
@@ -612,6 +667,23 @@ async function importTags(e) {
 </script>
 
 <style scoped>
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+.modal-box {
+  background: var(--bg, #fff);
+  border-radius: 12px;
+  padding: 20px;
+  width: 100%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
 .model-row {
   display: flex;
   align-items: center;

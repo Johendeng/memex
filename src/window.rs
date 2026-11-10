@@ -38,13 +38,15 @@ fn load_tray_icon() -> Option<tray_icon::Icon> {
 /// Memory ~15-25MB (vs ~390MB with full window).
 pub fn run_tray_only(port: u16) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}");
+    crate::applog::log(&format!("run_tray_only: starting HTTP on {url}"));
 
     // ── 1. Start HTTP server in background thread ──
     std::thread::Builder::new()
         .name("memex-http".into())
         .spawn(move || {
+            crate::applog::log("run_tray_only: http thread entered");
             if let Err(e) = crate::httpd::serve(port, false) {
-                eprintln!("http server error: {e:#}");
+                crate::applog::log(&format!("run_tray_only: http server error: {e:#}"));
             }
         })?;
 
@@ -52,28 +54,34 @@ pub fn run_tray_only(port: u16) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            crate::applog::log("run_tray_only: HTTP server ready");
             break;
         }
         if Instant::now() > deadline {
+            crate::applog::log(&format!("run_tray_only: HTTP server FAILED to start within 5s on port {port}"));
             bail!("HTTP server did not start within 5s on port {port}");
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 
     // ── 3. Tray-only event loop (no WebView2 window) ──
+    crate::applog::log("run_tray_only: creating tray icon");
     create_tray_only(&url)?;
+    crate::applog::log("run_tray_only: tray loop ended");
     Ok(())
 }
 
 pub fn run_window(port: u16) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}");
+    crate::applog::log(&format!("run_window: starting HTTP on {url}"));
 
     // ── 1. Start HTTP server in background thread ──
     let server_handle = std::thread::Builder::new()
         .name("memex-http".into())
         .spawn(move || {
+            crate::applog::log("run_window: http thread entered");
             if let Err(e) = crate::httpd::serve(port, false) {
-                eprintln!("http server error: {e:#}");
+                crate::applog::log(&format!("run_window: http server error: {e:#}"));
             }
         })?;
 
@@ -81,18 +89,28 @@ pub fn run_window(port: u16) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            crate::applog::log("run_window: HTTP server ready");
             break;
         }
         if Instant::now() > deadline {
+            crate::applog::log(&format!(
+                "run_window: HTTP server FAILED to start within 5s on port {port}"
+            ));
             bail!("HTTP server did not start within 5s on port {port}");
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 
     // ── 3. Create native window + WebView (with browser fallback) ──
+    crate::applog::log("run_window: creating native window");
     match create_window(&url) {
-        Ok(()) => {}
+        Ok(()) => {
+            crate::applog::log("run_window: window closed normally");
+        }
         Err(e) => {
+            crate::applog::log(&format!(
+                "run_window: native window unavailable ({e:#}), opening browser"
+            ));
             eprintln!("native window unavailable ({e:#}), opening browser instead");
             open_browser(&url);
             // Block until the HTTP server thread exits (Ctrl+C)
@@ -183,7 +201,7 @@ fn create_window(url: &str) -> Result<()> {
     // Startup auto-check (5s delay, background)
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_secs(5));
-        crate::update::auto_check("JohenDeng");
+        crate::update::auto_check();
     });
 
     eprintln!(
@@ -290,7 +308,7 @@ fn create_tray_only(url: &str) -> Result<()> {
     // Startup auto-check (5s delay, background)
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_secs(5));
-        crate::update::auto_check("JohenDeng");
+        crate::update::auto_check();
     });
 
     eprintln!("Memex tray-only mode → {url} (left-click=open browser, right-click=menu)");
@@ -329,6 +347,283 @@ fn create_tray_only(url: &str) -> Result<()> {
     });
     Ok(())
 }
+
+/// On Windows, detach from the console so the GUI selector doesn't show a
+/// black CMD window (Chromium cleanup warnings like Chrome_WidgetWin_0 = 1412
+/// would otherwise leak there). No-op on other platforms.
+#[cfg(windows)]
+fn detach_from_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn FreeConsole() -> i32;
+    }
+    unsafe {
+        let _ = FreeConsole();
+    }
+}
+
+#[cfg(not(windows))]
+fn detach_from_console() {}
+
+/// Mode selector GUI — shown when `memex.exe` is run with no subcommand.
+/// A small WebView2 window with two cards; clicking one spawns the
+/// appropriate `serve` child process and exits the selector.
+pub fn run_mode_selector() -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tao::{
+        dpi::LogicalSize,
+        event::{Event, WindowEvent},
+        event_loop::{ControlFlow, EventLoop},
+        window::WindowBuilder,
+    };
+    use wry::WebViewBuilder;
+
+    // Double-clicking a console-subsystem exe opens a black CMD window and
+    // Chromium's cleanup warnings (e.g. Chrome_WidgetWin_0 = 1412) leak there.
+    // Detach so only the GUI selector window shows.
+    detach_from_console();
+
+    let event_loop = EventLoop::new();
+
+    let mut builder = WindowBuilder::new()
+        .with_title("Memex")
+        .with_inner_size(LogicalSize::new(480, 340))
+        .with_resizable(false);
+    if let Some(icon) = load_tao_icon() {
+        builder = builder.with_window_icon(Some(icon));
+    }
+    let window = builder.build(&event_loop)?;
+
+    let exit_flag = Arc::new(AtomicBool::new(false));
+    let exit_flag_ipc = exit_flag.clone();
+
+    let webview = WebViewBuilder::new(&window)
+        .with_html(MODE_SELECTOR_HTML)
+        .with_ipc_handler(move |req| {
+            let body = req.body();
+            let exe = std::env::current_exe().unwrap_or_default();
+            // CREATE_NO_WINDOW — prevents the child `serve` process from
+            // opening a blank CMD console window.
+            #[cfg(windows)]
+            use std::os::windows::process::CommandExt;
+            #[cfg(windows)]
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+            let mut cmd = std::process::Command::new(&exe);
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            // Redirect child stdout/stderr to memex.log so errors are
+            // captured even without a console window.
+            let log_path = crate::applog::log_path();
+            if let Ok(log_file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                if let Ok(child_stderr) = log_file.try_clone() {
+                    cmd.stderr(std::process::Stdio::from(child_stderr));
+                }
+                if let Ok(child_stdout) = log_file.try_clone() {
+                    cmd.stdout(std::process::Stdio::from(child_stdout));
+                }
+            }
+
+            let (mode, spawn_result) = match body.as_str() {
+                ("tray") => {
+                    let r = cmd.arg("serve").arg("--no-window").spawn();
+                    ("tray", r)
+                }
+                ("window") => {
+                    let r = cmd.arg("serve").spawn();
+                    ("window", r)
+                }
+                _ => return,
+            };
+
+            match &spawn_result {
+                Ok(child) => {
+                    crate::applog::log(&format!(
+                        "selector: spawned '{mode}' mode, child PID={}",
+                        child.id()
+                    ));
+                    // Brief health check: wait 2s, if child already exited
+                    // it likely crashed on startup.
+                    let pid = child.id();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        // On Windows, check if the process is still running
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::process::CommandExt;
+                            let mut checker = std::process::Command::new("tasklist");
+                            checker.creation_flags(CREATE_NO_WINDOW);
+                            checker.args([
+                                "/FI", &format!("PID eq {pid}"),
+                                "/NH", "/FO", "CSV",
+                            ]);
+                            if let Ok(output) = checker.output() {
+                                let out = String::from_utf8_lossy(&output.stdout);
+                                if !out.contains(&pid.to_string()) {
+                                    crate::applog::log(&format!(
+                                        "selector: child PID={pid} exited within 2s — likely crashed on startup"
+                                    ));
+                                }
+                            }
+                        }
+                    });
+                }
+                Err(e) => {
+                    crate::applog::log(&format!(
+                        "selector: FAILED to spawn '{mode}' mode: {e}"
+                    ));
+                }
+            }
+            exit_flag_ipc.store(true, Ordering::SeqCst);
+        })
+        .build()?;
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        if exit_flag.load(Ordering::SeqCst) {
+            // Hide window first so Chromium can cleanly destroy the WebView
+            // before the window class is unregistered (avoids Error 1412).
+            window.set_visible(false);
+            *control_flow = ControlFlow::Exit;
+        }
+
+        if let Event::WindowEvent {
+            event: WindowEvent::CloseRequested,
+            ..
+        } = event
+        {
+            window.set_visible(false);
+            *control_flow = ControlFlow::Exit;
+        }
+    });
+
+    // Suppress unused-variable warning for webview (kept alive by event loop scope)
+    let _ = webview;
+    Ok(())
+}
+
+/// Embedded HTML for the mode selector window.
+const MODE_SELECTOR_HTML: &str = r#"<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    overflow: hidden;
+  }
+  .header { text-align: center; margin-bottom: 28px; }
+  .header h1 {
+    font-size: 24px;
+    font-weight: 700;
+    color: #f59e0b;
+    letter-spacing: 1px;
+  }
+  .header p { font-size: 13px; color: #666; margin-top: 4px; }
+  .cards { display: flex; gap: 18px; }
+  .card {
+    width: 180px;
+    height: 180px;
+    background: #16213e;
+    border: 1px solid #2a2a4a;
+    border-radius: 14px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+  }
+  .card:hover {
+    background: #1a1a3e;
+    border-color: #f59e0b;
+    transform: translateY(-3px);
+    box-shadow: 0 10px 28px rgba(245, 158, 11, 0.18);
+  }
+  .card:active { transform: translateY(-1px); }
+  .card .icon { font-size: 38px; margin-bottom: 10px; }
+  .card .title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #e0e0e0;
+  }
+  .card .title.rec { color: #f59e0b; }
+  .card .desc {
+    font-size: 12px;
+    color: #777;
+    line-height: 1.6;
+  }
+  .card .mem {
+    margin-top: 8px;
+    font-size: 11px;
+    padding: 2px 10px;
+    border-radius: 4px;
+  }
+  .card .mem.rec {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.1);
+  }
+  .card .mem.std {
+    color: #888;
+    background: rgba(136, 136, 136, 0.1);
+  }
+  .footer {
+    margin-top: 28px;
+    font-size: 11px;
+    color: #444;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>🐴 Memex</h1>
+    <p>选择启动模式</p>
+  </div>
+  <div class="cards">
+    <div class="card" onclick="choose('tray')">
+      <div class="icon">📌</div>
+      <div class="title rec">后台模式</div>
+      <div class="desc">仅系统托盘图标<br>配合 AI 助手搜索文档</div>
+      <div class="mem rec">~15MB · 推荐</div>
+    </div>
+    <div class="card" onclick="choose('window')">
+      <div class="icon">🖥️</div>
+      <div class="title">窗口模式</div>
+      <div class="desc">完整管理界面<br>搜索 / 统计 / 设置</div>
+      <div class="mem std">~390MB</div>
+    </div>
+  </div>
+  <div class="footer">Memex v1.0.6 · 本地知识库</div>
+  <script>
+    function choose(mode) {
+      document.body.style.pointerEvents = 'none';
+      window.ipc.postMessage(mode);
+    }
+  </script>
+</body>
+</html>"#;
 
 fn open_browser(url: &str) {
     #[cfg(windows)]
