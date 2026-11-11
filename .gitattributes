@@ -1,0 +1,12 @@
+# Shell scripts must keep LF line endings (CRLF breaks bash on Linux/macOS)
+*.sh text eol=lf
+
+# YAML workflows also need LF
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Desktop entry
+*.desktop text eol=lf
+
+# Windows batch files must be CRLF
+*.bat text eol=crlf

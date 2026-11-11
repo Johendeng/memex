@@ -35,7 +35,7 @@ pub const CHUNK_TARGET: usize = 500;
 pub const CHUNK_OVERLAP: usize = 80;
 
 /// How many files to parse before saving index+meta to disk in Phase 2.
-const SAVE_BATCH: usize = 50;
+const SAVE_BATCH: usize = 500;
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct IndexStats {
@@ -85,61 +85,97 @@ pub fn chunk_text(text: &str) -> Vec<String> {
 /// - mtime+size 变化 → 移除旧 chunk，重新注册标题 chunk，content_indexed=false
 /// - 新文件 → 注册 + content_indexed=false
 /// - 已消失 → 从 Index 移除 chunk
-pub fn index_titles(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats> {
-    let rules = meta.filter_rules.clone();
+/// Common waste directories to skip entirely during walk (prune at directory level).
+/// This prevents walking into node_modules/target/.git/etc., dramatically reducing
+/// the number of entries visited for large directory trees.
+const PRUNE_DIRS: &[&str] = &[
+    "node_modules", ".git", "target", "__pycache__", ".cache",
+    ".idea", ".vscode", "dist", "build", ".next", ".nuxt",
+    ".gradle", ".mvn", ".terraform", "venv", ".venv",
+    "$RECYCLE.BIN", "System Volume Information",
+];
+
+/// Check if a directory entry should be pruned (skipped entirely).
+fn should_prune_dir(name: &str) -> bool {
+    PRUNE_DIRS.iter().any(|d| d.eq_ignore_ascii_case(name))
+}
+
+/// Phase 1 background wrapper — runs `index_titles_inner` in background thread.
+/// On completion, Phase is reset to idle (or Phase 2 takes over).
+pub fn index_titles_background(meta: Arc<Mutex<Meta>>, idx: Arc<RwLock<BigramIndex>>) {
+    if let Err(e) = index_titles_inner(&meta, &idx) {
+        eprintln!("title indexing failed: {e:#}");
+    }
+}
+
+/// Phase 1 core — title-only index with batch saves.
+///
+/// Walks all registered folders, creates title-only chunk#0 (file stem) for each
+/// accepted file. Uses `Arc` shared state and releases locks between batches so
+/// that search works during indexing. Every `SAVE_BATCH` files, flushes pending
+/// data to the shared index + meta and saves to disk — so partial progress
+/// survives crashes and is immediately searchable.
+fn index_titles_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) -> Result<IndexStats> {
+    // Briefly lock to collect all needed data, then release for the walk
+    let (folders, rules, old_files, old_file_recs, mut next_file_id) = {
+        let m = meta.lock().unwrap();
+        let old: HashMap<String, (i64, u64, u64, bool)> = m
+            .files
+            .iter()
+            .map(|f| (f.rel_path.clone(), (f.id, f.mtime, f.size, f.content_indexed)))
+            .collect();
+        let old_recs: HashMap<i64, FileRec> = m
+            .files
+            .iter()
+            .map(|f| (f.id, f.clone()))
+            .collect();
+        (m.folders.clone(), m.filter_rules.clone(), old, old_recs, m.next_file_id)
+    };
     let globset = rules.build_globset()?;
 
-    // old_files: rel_path → (file_id, mtime, size, content_indexed)
-    let old_files: HashMap<String, (i64, u64, u64, bool)> = meta
-        .files
-        .iter()
-        .map(|f| (f.rel_path.clone(), (f.id, f.mtime, f.size, f.content_indexed)))
-        .collect();
-
-    // Use the shared index (already loaded by caller)
-    if idx.file_chunks.is_empty() && !idx.chunks.is_empty() {
-        idx.rebuild_file_chunks_map();
-    }
-
     let mut stats = IndexStats::default();
-    let mut new_files: Vec<FileRec> = Vec::new();
-    let mut next_file_id = meta.next_file_id;
-
-    // Track which old file_ids are still present
     let mut seen_old_ids: HashSet<i64> = HashSet::new();
 
-    // Pre-count total files
-    let mut total: u64 = 0;
-    for folder in &meta.folders {
-        let root = Path::new(&folder.path);
-        if !root.exists() {
-            continue;
-        }
-        for entry in WalkDir::new(root).follow_links(true).into_iter().flatten() {
-            if entry.file_type().is_file() {
-                total += 1;
-            }
-        }
-    }
-    PROGRESS_TOTAL.store(total, Ordering::Relaxed);
+    // Pending batches for incremental flush
+    let mut pending_adds: Vec<(i64, Vec<String>)> = Vec::with_capacity(SAVE_BATCH);
+    let mut pending_files: Vec<FileRec> = Vec::with_capacity(SAVE_BATCH);
+    let mut pending_count: usize = 0;
+    let mut flush_count: u64 = 0;
+
+    PROGRESS_PHASE.store(1, Ordering::Relaxed);
+    PROGRESS_TOTAL.store(0, Ordering::Relaxed);
     PROGRESS_DONE.store(0, Ordering::Relaxed);
     PROGRESS_SCANNED.store(0, Ordering::Relaxed);
-    PROGRESS_PHASE.store(1, Ordering::Relaxed);
     *PROGRESS_CURRENT.lock().unwrap() = None;
 
-    for folder in &meta.folders {
+    for folder in &folders {
         let root = Path::new(&folder.path);
         if !root.exists() {
             continue;
         }
 
-        for entry in WalkDir::new(root).follow_links(true).into_iter() {
-            let entry = entry?;
+        // Use filter_entry to prune waste directories at traversal time
+        for entry in WalkDir::new(root)
+            .follow_links(true)
+            .into_iter()
+            .filter_entry(|e| {
+                if e.file_type().is_dir() {
+                    if let Some(name) = e.file_name().to_str() {
+                        if should_prune_dir(name) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
+            .flatten()  // skip errors instead of propagating with ?
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
             stats.scanned += 1;
             PROGRESS_SCANNED.fetch_add(1, Ordering::Relaxed);
+            PROGRESS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
             let path = entry.path();
             let norm = path.to_string_lossy().replace('\\', "/");
@@ -148,8 +184,11 @@ pub fn index_titles(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats
                 continue;
             }
 
-            let m = entry.metadata()?;
-            let size = m.len();
+            // Use metadata from the walk entry (already available, no extra syscall)
+            let size = match entry.metadata() {
+                Ok(m) => m.len(),
+                Err(_) => { stats.skipped += 1; continue; }
+            };
             if !rules.accepts(path, size) {
                 stats.skipped += 1;
                 continue;
@@ -157,18 +196,16 @@ pub fn index_titles(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats
 
             let rel = match path.strip_prefix(root) {
                 Ok(r) => r.to_string_lossy().replace('\\', "/"),
-                Err(_) => {
-                    stats.skipped += 1;
-                    continue;
-                }
+                Err(_) => { stats.skipped += 1; continue; }
             };
             let ext = path
                 .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            let mtime = m
-                .modified()
+            let mtime = entry
+                .metadata()
                 .ok()
+                .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
@@ -183,8 +220,8 @@ pub fn index_titles(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats
                     // Completely unchanged — keep existing FileRec
                     stats.unchanged += 1;
                     seen_old_ids.insert(*old_id);
-                    if let Some(f) = meta.files.iter().find(|f| f.id == *old_id) {
-                        new_files.push(f.clone());
+                    if let Some(f) = old_file_recs.get(old_id) {
+                        pending_files.push(f.clone());
                     }
                     PROGRESS_DONE.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -192,15 +229,15 @@ pub fn index_titles(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats
                     // Same file, content not yet indexed — keep as title-only
                     stats.title_only += 1;
                     seen_old_ids.insert(*old_id);
-                    if let Some(f) = meta.files.iter().find(|f| f.id == *old_id) {
-                        new_files.push(f.clone());
+                    if let Some(f) = old_file_recs.get(old_id) {
+                        pending_files.push(f.clone());
                     }
                     PROGRESS_DONE.fetch_add(1, Ordering::Relaxed);
                     continue;
                 } else {
-                    // File changed — reuse ID, remove old chunks, re-register title
+                    // File changed — reuse ID, will remove old chunks during flush
                     seen_old_ids.insert(*old_id);
-                    idx.remove_file(*old_id);
+                    pending_adds.push((*old_id, Vec::new())); // mark for removal
                     *old_id
                 }
             } else {
@@ -216,9 +253,8 @@ pub fn index_titles(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            idx.add_file(file_id, &[stem]);
-
-            new_files.push(FileRec {
+            pending_adds.push((file_id, vec![stem]));
+            pending_files.push(FileRec {
                 id: file_id,
                 folder_id: folder.id,
                 rel_path: rel,
@@ -230,25 +266,98 @@ pub fn index_titles(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats
             stats.indexed += 1;
             stats.title_only += 1;
             stats.chunks += 1;
+            stats.skipped += 0;
             PROGRESS_DONE.fetch_add(1, Ordering::Relaxed);
+
+            pending_count += 1;
+            if pending_count >= SAVE_BATCH {
+                flush_title_batch(&mut pending_adds, &mut pending_files, idx, meta, &mut next_file_id, &mut flush_count);
+                pending_count = 0;
+            }
         }
     }
 
+    // Final flush
+    flush_title_batch(&mut pending_adds, &mut pending_files, idx, meta, &mut next_file_id, &mut flush_count);
+
     // Remove deleted files from index
-    for (old_id, _, _, _) in old_files.values() {
-        if !seen_old_ids.contains(old_id) {
-            idx.remove_file(*old_id);
+    {
+        let mut ix = idx.write().unwrap();
+        for (old_id, _, _, _) in old_files.values() {
+            if !seen_old_ids.contains(old_id) {
+                ix.remove_file(*old_id);
+            }
+        }
+        if let Err(e) = ix.save_postings() {
+            eprintln!("title indexing: idx.save_postings() failed: {e:#}");
         }
     }
 
     *PROGRESS_CURRENT.lock().unwrap() = None;
-    PROGRESS_PHASE.store(0, Ordering::Relaxed);
+    // Don't reset phase here — caller decides whether Phase 2 follows
 
-    meta.files = new_files;
-    meta.next_file_id = next_file_id;
-    idx.save_postings()?;
-    meta.save()?;
+    eprintln!(
+        "title indexing done: {} scanned, {} indexed, {} unchanged, {} skipped",
+        stats.scanned, stats.indexed, stats.unchanged, stats.skipped
+    );
+
     Ok(stats)
+}
+
+/// Flush a batch of title-index additions to the shared index + meta and save.
+/// Holds write lock only briefly to allow search between batches.
+fn flush_title_batch(
+    pending_adds: &mut Vec<(i64, Vec<String>)>,
+    pending_files: &mut Vec<FileRec>,
+    idx: &Arc<RwLock<BigramIndex>>,
+    meta: &Arc<Mutex<Meta>>,
+    next_file_id: &mut i64,
+    flush_count: &mut u64,
+) {
+    if pending_adds.is_empty() && pending_files.is_empty() {
+        return;
+    }
+    let adds: Vec<(i64, Vec<String>)> = std::mem::take(pending_adds);
+    let files: Vec<FileRec> = std::mem::take(pending_files);
+
+    // 1. Apply adds to index in memory (brief write lock, no disk I/O)
+    {
+        let mut ix = idx.write().unwrap();
+        for (file_id, chunks) in &adds {
+            if chunks.is_empty() {
+                ix.remove_file(*file_id);
+            } else {
+                ix.add_file(*file_id, chunks);
+            }
+        }
+    }
+
+    // 2. Apply files to meta in memory (brief lock, no disk I/O)
+    //    Search reads from in-memory state, so this makes new files searchable.
+    {
+        let mut m = meta.lock().unwrap();
+        m.files.extend(files);
+        m.next_file_id = *next_file_id;
+    }
+
+    // 3. Persist to disk every 10 batches (~5000 files) for crash recovery.
+    //    Uses read lock for idx (allows concurrent search readers).
+    //    Meta is cloned for saving so the lock is held only briefly.
+    *flush_count += 1;
+    if *flush_count % 10 == 0 {
+        {
+            let ix = idx.read().unwrap();
+            if let Err(e) = ix.save() {
+                eprintln!("title indexing: idx.save() failed: {e:#}");
+            }
+        }
+        let snapshot = meta.lock().unwrap().clone();
+        if let Err(e) = snapshot.save() {
+            eprintln!("title indexing: meta.save() failed: {e:#}");
+        }
+        // Mark dirty AFTER disk save completes so dispatch reload gets fresh data
+        META_DIRTY.store(true, Ordering::Relaxed);
+    }
 }
 
 // ===================================================== Phase 2: content index
@@ -370,6 +479,14 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
     // Final flush
     flush_batch(&mut pending_replacements, idx, meta, &processed_ids);
 
+    // Persist full postings to disk after content indexing completes
+    {
+        let ix = idx.read().unwrap();
+        if let Err(e) = ix.save_postings() {
+            eprintln!("content indexing: final save_postings() failed: {e:#}");
+        }
+    }
+
     eprintln!("content indexing done: {} files ({} failed)", done, failed);
     if ocr_total > 0 {
         eprintln!(
@@ -403,13 +520,18 @@ fn flush_batch(
         return;
     }
     let batch: Vec<(i64, Vec<String>)> = std::mem::take(pending);
+    // Apply to index in memory (brief write lock, no disk I/O)
     {
         let mut ix = idx.write().unwrap();
         for (file_id, chunks) in &batch {
             ix.replace_file(*file_id, chunks);
         }
-        if let Err(e) = ix.save_postings() {
-            eprintln!("content indexing: idx.save_postings() failed: {e:#}");
+    }
+    // Save index to disk with read lock (allows concurrent search)
+    {
+        let ix = idx.read().unwrap();
+        if let Err(e) = ix.save() {
+            eprintln!("content indexing: idx.save() failed: {e:#}");
         }
     }
     update_content_flags(meta, processed);
@@ -418,118 +540,66 @@ fn flush_batch(
 
 /// Update `content_indexed = true` for processed files in Meta.
 fn update_content_flags(meta: &Arc<Mutex<Meta>>, ids: &HashSet<i64>) {
-    let mut m = meta.lock().unwrap();
-    for f in &mut m.files {
-        if ids.contains(&f.id) {
-            f.content_indexed = true;
+    // Update in memory (brief lock)
+    {
+        let mut m = meta.lock().unwrap();
+        for f in &mut m.files {
+            if ids.contains(&f.id) {
+                f.content_indexed = true;
+            }
         }
     }
-    let _ = m.save();
+    // Save to disk outside lock (clone for saving)
+    let snapshot = meta.lock().unwrap().clone();
+    let _ = snapshot.save();
 }
 
-// ===================================================== Full rebuild
+// ===================================================== Background entry points
 
-/// Full rebuild — 从零重建全部索引（含内容解析，同步）。
-/// 保留稳定 ID（按路径复用），所有文件都重新解析内容。
-pub fn reindex_full(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats> {
-    // Phase 1: title index
-    let mut stats = index_titles(meta, idx)?;
-
-    // Phase 2: content index (inline, not background)
-    let to_index: Vec<FileRec> =
-        meta.files.iter().filter(|f| !f.content_indexed).cloned().collect();
-
-    PROGRESS_PHASE.store(2, Ordering::Relaxed);
-    PROGRESS_CONTENT_TOTAL.store(to_index.len() as u64, Ordering::Relaxed);
-    PROGRESS_CONTENT_DONE.store(0, Ordering::Relaxed);
-
-    let folder_paths: HashMap<i64, String> =
-        meta.folders.iter().map(|f| (f.id, f.path.clone())).collect();
-
-    if idx.file_chunks.is_empty() && !idx.chunks.is_empty() {
-        idx.rebuild_file_chunks_map();
+/// Full rebuild background — Phase 1 + Phase 2 in one background thread.
+/// Used by HTTP `cmd_index_run` mode="full".
+pub fn reindex_full_background(meta: Arc<Mutex<Meta>>, idx: Arc<RwLock<BigramIndex>>) {
+    if let Err(e) = index_titles_inner(&meta, &idx) {
+        eprintln!("title indexing failed: {e:#}");
+        PROGRESS_PHASE.store(0, Ordering::Relaxed);
+        *PROGRESS_CURRENT.lock().unwrap() = None;
+        return;
     }
-
-    let mut done = 0u64;
-    let mut failed = 0u64;
-    let mut processed_ids: HashSet<i64> = HashSet::new();
-
-    for file in &to_index {
-        let Some(folder_path) = folder_paths.get(&file.folder_id) else {
-            failed += 1;
-            continue;
-        };
-        let full_path = format!("{}/{}", folder_path, file.rel_path);
-        *PROGRESS_CURRENT.lock().unwrap() = Some(full_path.clone());
-
-        let text = match parser::extract_text(Path::new(&full_path)) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("skip {full_path}: {e:#}");
-                failed += 1;
-                done += 1;
-                processed_ids.insert(file.id);
-                PROGRESS_CONTENT_DONE.store(done, Ordering::Relaxed);
-                continue;
-            }
-        };
-
-        let stem = Path::new(&full_path)
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let full_text = format!("{}\n{}", stem, text);
-        let chunks = chunk_text(&full_text);
-        idx.replace_file(file.id, &chunks);
-
-        done += 1;
-        stats.chunks += chunks.len() as u64;
-        processed_ids.insert(file.id);
-        PROGRESS_CONTENT_DONE.store(done, Ordering::Relaxed);
-
-        if (done as usize) % SAVE_BATCH == 0 {
-            idx.save()?;
-            for f in &mut meta.files {
-                if processed_ids.contains(&f.id) {
-                    f.content_indexed = true;
-                }
-            }
-            let _ = meta.save();
-        }
-    }
-
-    // Final save
-    for f in &mut meta.files {
-        if processed_ids.contains(&f.id) {
-            f.content_indexed = true;
-        }
-    }
-    idx.compact();
-    idx.save_postings()?;
-    meta.save()?;
-
-    PROGRESS_PHASE.store(0, Ordering::Relaxed);
-    *PROGRESS_CURRENT.lock().unwrap() = None;
-
-    stats.failed += failed;
-    stats.indexed += done;
-    Ok(stats)
+    // Phase 2: content index
+    index_content_background(meta, idx);
 }
 
-// ===================================================== Incremental re-index
-
-/// 增量重建 — Phase 1 检测变更（秒级），返回统计。
-/// Phase 2 由调用方（httpd）决定是否启动后台线程。
-pub fn reindex_incremental(meta: &mut Meta, idx: &mut BigramIndex) -> Result<IndexStats> {
-    index_titles(meta, idx)
+/// Incremental rebuild background — Phase 1 + Phase 2 in one background thread.
+/// Used by HTTP `cmd_index_run` mode="incremental".
+pub fn reindex_incremental_background(meta: Arc<Mutex<Meta>>, idx: Arc<RwLock<BigramIndex>>) {
+    if let Err(e) = index_titles_inner(&meta, &idx) {
+        eprintln!("title indexing failed: {e:#}");
+        PROGRESS_PHASE.store(0, Ordering::Relaxed);
+        *PROGRESS_CURRENT.lock().unwrap() = None;
+        return;
+    }
+    // Phase 2: content index
+    index_content_background(meta, idx);
 }
 
 // ===================================================== Legacy compat
 
-/// 旧版全量索引（CLI `memex index` 向后兼容）。
+/// CLI compat — synchronous full rebuild (`memex index`).
+/// Wraps data in Arc, runs Phase 1 + Phase 2 inline, then moves data back.
 pub fn index_all(meta: &mut Meta) -> Result<IndexStats> {
-    let mut idx = BigramIndex::load()?;
-    let stats = reindex_full(meta, &mut idx)?;
+    let idx = BigramIndex::load()?;
+    let meta_arc = Arc::new(Mutex::new(meta.clone()));
+    let idx_arc = Arc::new(RwLock::new(idx));
+
+    let stats = index_titles_inner(&meta_arc, &idx_arc)?;
+    if let Err(e) = index_content_inner(&meta_arc, &idx_arc) {
+        eprintln!("content indexing failed: {e:#}");
+    }
+
+    // Move data back to caller
+    if let Ok(m) = Arc::try_unwrap(meta_arc) {
+        *meta = m.into_inner().unwrap();
+    }
     Ok(stats)
 }
 

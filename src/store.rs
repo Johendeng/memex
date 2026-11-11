@@ -95,7 +95,7 @@ pub struct ConfidenceRec {
 
 pub const CONFIDENCE_THRESHOLD: f64 = 0.85;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Meta {
     #[serde(default)]
     pub folders: Vec<FolderRec>,

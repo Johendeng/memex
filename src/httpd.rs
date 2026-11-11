@@ -57,7 +57,9 @@ pub fn serve(port: u16, open: bool) -> Result<()> {
     if open {
         #[cfg(windows)]
         std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn()?;
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        std::process::Command::new("open").arg(&url).spawn()?;
+        #[cfg(all(not(windows), not(target_os = "macos")))]
         {
             let _ = open; // suppress unused warning on non-Windows
             std::process::Command::new("xdg-open").arg(&url).spawn()?;
@@ -240,9 +242,14 @@ fn dispatch(
     cmd: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    // Reload Meta if background thread flagged it dirty (Phase 2 / watcher)
+    // Reload Meta if background thread flagged it dirty — but ONLY when
+    // indexing is NOT running. During indexing, the in-memory Meta is more
+    // up-to-date than the on-disk copy (which is saved every ~5000 files).
+    // Reloading during indexing would LOSE the in-memory additions.
     use std::sync::atomic::Ordering;
-    if indexer::META_DIRTY.load(Ordering::Relaxed) {
+    if indexer::META_DIRTY.load(Ordering::Relaxed)
+        && indexer::PROGRESS_PHASE.load(Ordering::Relaxed) == 0
+    {
         if let Ok(fresh) = Meta::load() {
             *meta.lock().unwrap() = fresh;
             indexer::META_DIRTY.store(false, Ordering::Relaxed);
@@ -294,36 +301,37 @@ fn dispatch(
             serde_json::json!({ "ok": true })
         }
         "cmd_index_run" => {
-            // Reload Meta if background thread flagged it dirty
-            if indexer::META_DIRTY.load(Ordering::Relaxed) {
-                if let Ok(fresh) = Meta::load() {
-                    *meta.lock().unwrap() = fresh;
-                    indexer::META_DIRTY.store(false, Ordering::Relaxed);
+            // Check if indexing is already running
+            let phase = indexer::PROGRESS_PHASE.load(Ordering::Relaxed);
+            if phase != 0 {
+                serde_json::json!({
+                    "error": "indexing already in progress",
+                    "phase": phase
+                })
+            } else {
+                // Reload Meta if background thread flagged it dirty
+                if indexer::META_DIRTY.load(Ordering::Relaxed) {
+                    if let Ok(fresh) = Meta::load() {
+                        *meta.lock().unwrap() = fresh;
+                        indexer::META_DIRTY.store(false, Ordering::Relaxed);
+                    }
                 }
-            }
-            let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("full");
-            match mode {
-                "incremental" => {
-                    // Phase 1: title index (seconds), then Phase 2 in background
-                    let mut m = meta.lock().unwrap();
-                    let mut ix = idx.write().unwrap();
-                    let stats = indexer::reindex_incremental(&mut m, &mut ix)?;
-                    drop(ix);
-                    drop(m);
-                    // Start Phase 2 background thread
-                    let meta_clone = meta.clone();
-                    let idx_clone = idx.clone();
-                    std::thread::spawn(move || {
-                        indexer::index_content_background(meta_clone, idx_clone);
-                    });
-                    serde_json::to_value(&stats)?
-                }
-                _ => {
-                    // "full" — synchronous full rebuild (Phase 1 + Phase 2 inline)
-                    let mut m = meta.lock().unwrap();
-                    let mut ix = idx.write().unwrap();
-                    let stats = indexer::reindex_full(&mut m, &mut ix)?;
-                    serde_json::to_value(&stats)?
+                let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("full");
+                let meta_clone = meta.clone();
+                let idx_clone = idx.clone();
+                match mode {
+                    "incremental" => {
+                        std::thread::spawn(move || {
+                            indexer::reindex_incremental_background(meta_clone, idx_clone);
+                        });
+                        serde_json::json!({"status": "started", "mode": "incremental"})
+                    }
+                    _ => {
+                        std::thread::spawn(move || {
+                            indexer::reindex_full_background(meta_clone, idx_clone);
+                        });
+                        serde_json::json!({"status": "started", "mode": "full"})
+                    }
                 }
             }
         }
@@ -417,7 +425,9 @@ fn dispatch(
             std::process::Command::new("cmd")
                 .args(["/C", "start", "", path])
                 .spawn()?;
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
+            std::process::Command::new("open").arg(path).spawn()?;
+            #[cfg(all(not(windows), not(target_os = "macos")))]
             std::process::Command::new("xdg-open").arg(path).spawn()?;
             serde_json::json!({ "ok": true })
         }
@@ -430,7 +440,11 @@ fn dispatch(
             std::process::Command::new("explorer")
                 .args([format!("/select,{}", path)])
                 .spawn()?;
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
+            std::process::Command::new("open")
+                .args(["-R", path])
+                .spawn()?;
+            #[cfg(all(not(windows), not(target_os = "macos")))]
             {
                 let parent = std::path::Path::new(path)
                     .parent()
@@ -843,8 +857,11 @@ MCP endpoint: `POST {http_url}`
         }
         "cmd_index_progress" => {
             use std::sync::atomic::Ordering;
-            // Reload Meta if background thread flagged it dirty
-            if indexer::META_DIRTY.load(Ordering::Relaxed) {
+            // Reload Meta if background thread flagged it dirty — but ONLY
+            // when indexing is NOT running (same reason as dispatch()).
+            if indexer::META_DIRTY.load(Ordering::Relaxed)
+                && indexer::PROGRESS_PHASE.load(Ordering::Relaxed) == 0
+            {
                 if let Ok(fresh) = Meta::load() {
                     *meta.lock().unwrap() = fresh;
                     indexer::META_DIRTY.store(false, Ordering::Relaxed);

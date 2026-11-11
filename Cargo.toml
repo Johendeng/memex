@@ -68,7 +68,7 @@ default = []
 pdfium = ["dep:pdfium-render"]
 ocr = ["dep:rusto-rs", "dep:image"]
 
-[build-dependencies]
+[target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
 
 [profile.release]

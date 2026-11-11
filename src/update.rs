@@ -116,7 +116,15 @@ fn check_gitee(current: &str) -> Result<Option<UpdateInfo>> {
     let asset = resp
         .assets
         .iter()
-        .find(|a| a.name.ends_with(".exe"))
+        .filter(|a| {
+            #[cfg(windows)]
+            { a.name.ends_with(".exe") }
+            #[cfg(target_os = "macos")]
+            { a.name.ends_with(".tar.gz") || a.name.ends_with(".dmg") || a.name.ends_with(".zip") }
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            { true }
+        })
+        .next()
         .or_else(|| resp.assets.first());
 
     let (download_url, installer_filename) = match asset {
@@ -151,7 +159,15 @@ fn check_github(current: &str) -> Result<Option<UpdateInfo>> {
     let asset = resp
         .assets
         .iter()
-        .find(|a| a.name.ends_with(".exe"))
+        .filter(|a| {
+            #[cfg(windows)]
+            { a.name.ends_with(".exe") }
+            #[cfg(target_os = "macos")]
+            { a.name.ends_with(".tar.gz") || a.name.ends_with(".dmg") || a.name.ends_with(".zip") }
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            { true }
+        })
+        .next()
         .or_else(|| resp.assets.first());
 
     let (download_url, installer_filename) = match asset {

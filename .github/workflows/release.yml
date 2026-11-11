@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows-x64
+          - os: macos-latest
+            name: macOS-universal
+          - os: ubuntu-latest
+            name: Linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── Linux: install system dependencies for wry/tao (WebKitGTK) ──
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            patchelf
+
+      # ── Build frontend (all platforms) ──
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      # ── Download runtime assets (onnxruntime, pdfium, models) ──
+      - name: Download runtime assets
+        run: bash scripts/download-assets-ci.sh
+
+      # ── macOS: download x64 dylibs and lipo-merge with arm64 ──
+      - name: macOS — merge universal dylibs
+        if: runner.os == 'macOS'
+        run: |
+          # Download x86_64 onnxruntime
+          echo "Downloading x64 onnxruntime..."
+          curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-osx-x64-1.20.1.tgz" -o /tmp/ort-x64.tgz
+          mkdir -p /tmp/ort-x64
+          tar xzf /tmp/ort-x64.tgz -C /tmp/ort-x64 --strip-components=1
+
+          # Download x64 pdfium
+          echo "Downloading x64 pdfium..."
+          PDF_TAG=$(curl -sL "https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest" | python3 -c "import json,sys;print(json.load(sys.stdin)['tag_name'])" 2>/dev/null || echo "chromium-8138")
+          curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDF_TAG}/pdfium-macos-x64.tgz" -o /tmp/pdfium-x64.tgz
+          mkdir -p /tmp/pdfium-x64
+          tar xzf /tmp/pdfium-x64.tgz -C /tmp/pdfium-x64
+
+          # lipo merge dylibs
+          echo "Merging universal dylibs..."
+          lipo -create \
+            target/release/libonnxruntime.dylib \
+            /tmp/ort-x64/lib/libonnxruntime.dylib \
+            -output target/release/libonnxruntime.dylib
+          echo "✅ libonnxruntime.dylib (universal)"
+
+          PDF_X64=$(find /tmp/pdfium-x64 -name "*.dylib" | head -1)
+          if [ -n "$PDF_X64" ]; then
+            lipo -create \
+              target/release/libpdfium.dylib \
+              "$PDF_X64" \
+              -output target/release/libpdfium.dylib
+            echo "✅ libpdfium.dylib (universal)"
+          fi
+
+      # ── Build Rust binary ──
+      - name: Build Rust (Windows / Linux)
+        if: runner.os != 'macOS'
+        run: cargo build --release --features "pdfium ocr"
+
+      - name: Build Rust (macOS — universal)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --target aarch64-apple-darwin --features "pdfium ocr"
+          cargo build --release --target x86_64-apple-darwin --features "pdfium ocr"
+          lipo -create -output target/release/memex \
+            target/aarch64-apple-darwin/release/memex \
+            target/x86_64-apple-darwin/release/memex
+          file target/release/memex
+
+      # ── Package: Windows (Inno Setup) ──
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        run: |
+          mkdir -p dist
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/memex.iss
+          cp installer/Output/*.exe dist/
+
+      # ── Package: macOS (.app bundle) ──
+      - name: Package macOS .app
+        if: runner.os == 'macOS'
+        run: |
+          # Generate .icns icon
+          mkdir -p assets/memex.iconset
+          sips -z 16 16     assets/memex_icon.png --out assets/memex.iconset/icon_16x16.png
+          sips -z 32 32     assets/memex_icon.png --out assets/memex.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/memex_icon.png --out assets/memex.iconset/icon_32x32.png
+          sips -z 64 64     assets/memex_icon.png --out assets/memex.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/memex_icon.png --out assets/memex.iconset/icon_128x128.png
+          sips -z 256 256   assets/memex_icon.png --out assets/memex.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/memex_icon.png --out assets/memex.iconset/icon_256x256.png
+          sips -z 512 512   assets/memex_icon.png --out assets/memex.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/memex_icon.png --out assets/memex.iconset/icon_512x512.png
+          iconutil -c icns assets/memex.iconset -o assets/memex_icon.icns
+          # Assemble .app bundle
+          bash scripts/package-macos.sh
+          # Create tar.gz
+          cd dist && tar czf Memex-macOS-universal.tar.gz Memex.app
+
+      # ── Package: Linux (AppImage) ──
+      - name: Package Linux AppImage
+        if: runner.os == 'Linux'
+        run: bash scripts/package-linux.sh
+
+      # ── Upload artifact ──
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Memex-${{ matrix.name }}
+          path: |
+            dist/*.exe
+            dist/*.tar.gz
+            dist/*.AppImage
+
+      # ── Create GitHub Release (only on tag push) ──
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.tar.gz
+            dist/*.AppImage
+          draft: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
