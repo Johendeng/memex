@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     strategy:
@@ -77,12 +81,13 @@ jobs:
           mkdir -p /tmp/pdfium-x64
           tar xzf /tmp/pdfium-x64.tgz -C /tmp/pdfium-x64
 
-          # lipo merge dylibs
+          # lipo merge dylibs (must use temp file — can't use same file as input+output)
           echo "Merging universal dylibs..."
           lipo -create \
             target/release/libonnxruntime.dylib \
             /tmp/ort-x64/lib/libonnxruntime.dylib \
-            -output target/release/libonnxruntime.dylib
+            -output /tmp/libonnxruntime_universal.dylib
+          cp /tmp/libonnxruntime_universal.dylib target/release/libonnxruntime.dylib
           echo "✅ libonnxruntime.dylib (universal)"
 
           PDF_X64=$(find /tmp/pdfium-x64 -name "*.dylib" | head -1)
@@ -90,8 +95,11 @@ jobs:
             lipo -create \
               target/release/libpdfium.dylib \
               "$PDF_X64" \
-              -output target/release/libpdfium.dylib
+              -output /tmp/libpdfium_universal.dylib
+            cp /tmp/libpdfium_universal.dylib target/release/libpdfium.dylib
             echo "✅ libpdfium.dylib (universal)"
+          else
+            echo "⚠ No x64 pdfium dylib found, keeping arm64 only"
           fi
 
       # ── Build Rust binary ──
@@ -114,7 +122,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           mkdir -p dist
-          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/memex.iss
+          'C:/Program Files (x86)/Inno Setup 6/ISCC.exe' installer/memex.iss
           cp installer/Output/*.exe dist/
 
       # ── Package: macOS (.app bundle) ──
