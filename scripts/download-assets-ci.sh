@@ -72,8 +72,7 @@ echo "  Latest pdfium tag: $PDF_TAG"
 
 case "$OS-$ARCH" in
   windows-x64)  PDF_PKG="pdfium-win-x64.tgz" ;;
-  macos-arm64)  PDF_PKG="pdfium-macos-arm64.tgz" ;;
-  macos-x64)    PDF_PKG="pdfium-macos-x64.tgz" ;;
+  macos-*)      PDF_PKG="" ;;  # bblanchon/pdfium-binaries 不提供 macOS 包
   linux-x64)    PDF_PKG="pdfium-linux-x64.tgz" ;;
   linux-arm64)  PDF_PKG="pdfium-linux-arm64.tgz" ;;
   *) echo "  ⚠ Unsupported: $OS-$ARCH, skipping pdfium"; PDF_PKG="" ;;

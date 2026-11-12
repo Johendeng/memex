@@ -49,6 +49,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libssl-dev \
+            libxdo-dev \
             patchelf
 
       # ── Build frontend (all platforms) ──
@@ -74,12 +75,10 @@ jobs:
           mkdir -p /tmp/ort-x64
           tar xzf /tmp/ort-x64.tgz -C /tmp/ort-x64 --strip-components=1
 
-          # Download x64 pdfium
-          echo "Downloading x64 pdfium..."
-          PDF_TAG=$(curl -sL "https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest" | python3 -c "import json,sys;print(json.load(sys.stdin)['tag_name'])" 2>/dev/null || echo "chromium-8138")
-          curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDF_TAG}/pdfium-macos-x64.tgz" -o /tmp/pdfium-x64.tgz
-          mkdir -p /tmp/pdfium-x64
-          tar xzf /tmp/pdfium-x64.tgz -C /tmp/pdfium-x64
+          # Download x64 pdfium (bblanchon/pdfium-binaries 不提供 macOS 包，跳过)
+          echo "Skipping x64 pdfium — not available for macOS"
+          # Set empty so lipo step knows to skip
+          PDF_X64=""
 
           # lipo merge dylibs (must use temp file — can't use same file as input+output)
           echo "Merging universal dylibs..."
@@ -99,8 +98,12 @@ jobs:
             cp /tmp/libpdfium_universal.dylib target/release/libpdfium.dylib
             echo "✅ libpdfium.dylib (universal)"
           else
-            echo "⚠ No x64 pdfium dylib found, keeping arm64 only"
+            echo "⚠ No x64 pdfium dylib found, skipping (pdfium not available on macOS)"
           fi
+
+          # Verify universal binaries
+          echo "Verifying universal dylibs:"
+          file target/release/libonnxruntime.dylib
 
       # ── Build Rust binary ──
       - name: Build Rust (Windows / Linux)
@@ -110,8 +113,8 @@ jobs:
       - name: Build Rust (macOS — universal)
         if: runner.os == 'macOS'
         run: |
-          cargo build --release --target aarch64-apple-darwin --features "pdfium ocr"
-          cargo build --release --target x86_64-apple-darwin --features "pdfium ocr"
+          cargo build --release --target aarch64-apple-darwin --features "ocr"
+          cargo build --release --target x86_64-apple-darwin --features "ocr"
           lipo -create -output target/release/memex \
             target/aarch64-apple-darwin/release/memex \
             target/x86_64-apple-darwin/release/memex
