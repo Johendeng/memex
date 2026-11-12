@@ -21,6 +21,26 @@ fn main() {
         }
     }
 
+    // `winres` only works for MSVC: it emits `cargo:rustc-link-lib=dylib=resource`
+    // and lets the linker pull the `.lib` in by name. The GNU (MinGW) backend
+    // instead archives the object into `libresource.a` and emits
+    // `cargo:rustc-link-lib=static=resource`; because a `.rsrc`-only object
+    // exports no symbols, `ld` never extracts that archive member, so the
+    // resource section is silently dropped and the built exe gets no icon and
+    // no version info. Link the object explicitly to force it in.
+    #[cfg(all(windows, target_env = "gnu"))]
+    {
+        let out_dir = env::var("OUT_DIR").unwrap_or_default();
+        let obj = PathBuf::from(&out_dir).join("resource.o");
+        if obj.is_file() {
+            println!("cargo:rustc-link-arg={}", obj.display());
+        } else {
+            println!(
+                "cargo:warning=resource.o not found in OUT_DIR — icon will be missing from the exe"
+            );
+        }
+    }
+
     // WebView2Loader.dll copy — Windows only.
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "windows" {

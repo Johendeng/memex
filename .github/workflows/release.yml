@@ -89,17 +89,8 @@ jobs:
           cp /tmp/libonnxruntime_universal.dylib target/release/libonnxruntime.dylib
           echo "✅ libonnxruntime.dylib (universal)"
 
-          PDF_X64=$(find /tmp/pdfium-x64 -name "*.dylib" | head -1)
-          if [ -n "$PDF_X64" ]; then
-            lipo -create \
-              target/release/libpdfium.dylib \
-              "$PDF_X64" \
-              -output /tmp/libpdfium_universal.dylib
-            cp /tmp/libpdfium_universal.dylib target/release/libpdfium.dylib
-            echo "✅ libpdfium.dylib (universal)"
-          else
-            echo "⚠ No x64 pdfium dylib found, skipping (pdfium not available on macOS)"
-          fi
+          # pdfium: bblanchon 不提供 macOS 包，跳过 lipo
+          echo "Skipping pdfium lipo — not available for macOS"
 
           # Verify universal binaries
           echo "Verifying universal dylibs:"

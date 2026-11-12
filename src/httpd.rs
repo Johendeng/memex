@@ -453,6 +453,13 @@ fn dispatch(
             }
             serde_json::json!({ "ok": true })
         }
+        "cmd_pick_folder" => {
+            let folder = rfd::FileDialog::new().pick_folder();
+            match folder {
+                Some(p) => serde_json::json!({ "path": p.display().to_string() }),
+                None => serde_json::json!({ "path": "" }),
+            }
+        }
         // ---- M3: embedding (hybrid search support) ----
         "cmd_vector_status" => {
             let has = std::path::Path::new(&vector::vector_path()?).exists();

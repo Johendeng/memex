@@ -2,7 +2,8 @@
   <div class="col">
     <div class="card">
       <div class="row between">
-        <input v-model="newPath" class="input" placeholder="D:\资料\技术文档" @keyup.enter="add" />
+        <input v-model="newPath" class="input" placeholder="D:\资料\技术文档" @keyup.enter="add" style="flex:1" />
+        <button class="btn ghost sm" @click="browse" :disabled="busy">浏览…</button>
         <button class="btn" @click="add">添加源</button>
       </div>
     </div>
@@ -115,6 +116,14 @@ async function add() {
   } catch (e) {
     setErr(e.message)
     busy.value = false
+  }
+}
+async function browse() {
+  try {
+    const r = await api.pickFolder()
+    if (r.path) newPath.value = r.path
+  } catch (e) {
+    setErr(e.message)
   }
 }
 async function remove(id) {
