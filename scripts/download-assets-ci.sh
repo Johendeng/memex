@@ -10,9 +10,9 @@ ROOT="$(pwd)"
 # Detect platform from RUNNER_OS env (set by GitHub Actions)
 OS="${RUNNER_OS:-$(uname -s)}"
 case "$OS" in
-  Linux)   OS="linux" ;;
-  Darwin)  OS="macos" ;;
-  Windows*) OS="windows" ;;
+  Linux|linux)    OS="linux" ;;
+  Darwin|macOS)   OS="macos" ;;
+  Windows*|windows*) OS="windows" ;;
 esac
 
 ARCH="${RUNNER_ARCH:-$(uname -m)}"
