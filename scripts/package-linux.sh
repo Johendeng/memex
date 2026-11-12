@@ -64,7 +64,7 @@ chmod +x /tmp/appimagetool
 
 # Set output name
 export OUTPUT="Memex-x86_64.AppImage"
-export VERSION="${VERSION:-1.0.6}"
+export VERSION="${VERSION:-1.1.0}"
 
 # AppImage tools need this on CI (no FUSE available)
 export APPIMAGE_EXTRACT_AND_RUN=1

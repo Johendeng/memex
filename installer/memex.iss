@@ -1,6 +1,6 @@
 ; Memex — Guided Installer (Inno Setup)
 ; Build: ISCC.exe memex.iss
-; Output: C:\workspace\my_project\memex\installer\Output\Memex-Setup-1.0.6.exe
+; Output: C:\workspace\my_project\memex\installer\Output\Memex-Setup-1.1.0.exe
 ;
 ; Target directory: C:\Memex\
 ; Structure:
@@ -15,14 +15,14 @@
 [Setup]
 AppName=Memex
 AppId={{MEMEX-2026-JohenDeng}
-AppVersion=1.0.6
+AppVersion=1.1.0
 AppPublisher=JohenDeng
 AppPublisherURL=https://github.com/JohenDeng/memex
 DefaultDirName=C:\Memex
 DefaultGroupName=Memex
 DisableProgramGroupPage=yes
 OutputDir=Output
-OutputBaseFilename=Memex-Setup-1.0.6
+OutputBaseFilename=Memex-Setup-1.1.0
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin

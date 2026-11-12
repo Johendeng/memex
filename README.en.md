@@ -2,7 +2,7 @@
 
 > **Local knowledge base + AI memory. Your files, your index, your Agent.**
 
-[![version](https://img.shields.io/badge/version-1.0.6-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)]() [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-orange)]() [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
+[![version](https://img.shields.io/badge/version-1.1.0-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)]() [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-orange)]() [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
 
 [中文](./README.md) | [English](./README.en.md)
 

@@ -7,7 +7,7 @@
 
 > **本地知识库索引 + AI 记忆体。索引归工具，理解归 Agent。**
 
-[![version](https://img.shields.io/badge/version-1.0.6-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE) [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
+[![version](https://img.shields.io/badge/version-1.1.0-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE) [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
 
 Memex 不接大模型。它只做一件事：把你散落的本地文件建成**全文倒排 + 内容向量**索引，再通过 **MCP** 暴露给本地 Agent（Claude Code / Cursor / Codex / DSH …）。语义理解交给 Agent，定位与检索归工具。
 
@@ -288,7 +288,7 @@ cd frontend && npm run dev
 ```bash
 # 1) 按 §5.2 构建，2) 备好 target/release/ 下的 DLL 与 models/
 ISCC.exe installer/memex.iss
-# → installer/Output/Memex-Setup-1.0.6.exe
+# → installer/Output/Memex-Setup-1.1.0.exe
 ```
 
 安装到 `C:\Memex\`，可选桌面快捷方式 / 开机自启（`serve --no-window`）。运行时**不写注册表**，只占一个 HKLM 卸载项（[installer/memex.iss:12-13](installer/memex.iss#L12-L13)）。
@@ -387,7 +387,7 @@ protocolVersion = "2024-11-05"，capabilities 仅声明 tools
 
 ```jsonl
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"memex","version":"1.0.6"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"memex","version":"1.1.0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memex_search","arguments":{"query":"流量","hybrid":true,"limit":5}}}
@@ -514,7 +514,7 @@ DSH 走插件体系，宿主自带 `@deepseek-ai/dsh-mcp-client`，**一个只�
 | 2 | stdio 每次调用重载索引 | 大库下单次调用秒级 | 用 HTTP 模式，或改共享索引 |
 | 3 | `/mcp` 无 SSE / 无 Session / `GET` 走错分支 | 严格客户端可能握手失败 | 见 §7.4 |
 | 4 | 手写 HTTP：每连接一线程、`Connection: close`、无 keep-alive | 高并发下线程数上涨 | 本地单用户场景可接受 |
-| 5 | 版本号不一致：`Cargo.toml` / `memex.iss` 已是 1.0.6，`start.bat` 仍打印 1.0.0 | 发布易出错 | 以 `Cargo.toml` 为准，改版本时同步 `memex.iss` 与 `start.bat` |
+| 5 | 版本号不一致：`Cargo.toml` / `memex.iss` 已是 1.1.0，`start.bat` 仍打印 1.0.0 | 发布易出错 | 以 `Cargo.toml` 为准，改版本时同步 `memex.iss` 与 `start.bat` |
 | 6 | `mcp.rs` 文件头注释仍写"四个工具"，实际 13 个 | 误导读者 | 已在本 README 更正 |
 | 7 | `docs/` 被 gitignore，`tech-design.md` 不在仓库 | 设计意图只能从注释反推 | 见 §2.3 |
 | 8 | `models/` 与 `*.dll` 全部 gitignore | 新 clone 无法直接跑语义检索 | 按 §5.4 准备 |
