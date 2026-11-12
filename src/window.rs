@@ -615,7 +615,7 @@ const MODE_SELECTOR_HTML: &str = r#"<!DOCTYPE html>
       <div class="mem std">~390MB</div>
     </div>
   </div>
-  <div class="footer">Memex v1.0.6 · 本地知识库</div>
+  <div class="footer">Memex v1.1.0 · 本地知识库</div>
   <script>
     function choose(mode) {
       document.body.style.pointerEvents = 'none';
