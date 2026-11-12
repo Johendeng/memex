@@ -70,7 +70,7 @@ jobs:
         run: |
           # Download x86_64 onnxruntime
           echo "Downloading x64 onnxruntime..."
-          curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-osx-x64-1.20.1.tgz" -o /tmp/ort-x64.tgz
+          curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-osx-x86_64-1.20.1.tgz" -o /tmp/ort-x64.tgz
           mkdir -p /tmp/ort-x64
           tar xzf /tmp/ort-x64.tgz -C /tmp/ort-x64 --strip-components=1
 

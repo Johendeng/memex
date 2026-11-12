@@ -33,7 +33,7 @@ echo "[1/4] Downloading ONNX Runtime $ORT_VER..."
 case "$OS-$ARCH" in
   windows-x64)   ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-win-x64-${ORT_VER}.zip"; ORT_LIB="lib/onnxruntime.dll" ;;
   macos-arm64)   ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-arm64-${ORT_VER}.tgz"; ORT_LIB="lib/libonnxruntime.dylib" ;;
-  macos-x64)     ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-x64-${ORT_VER}.tgz"; ORT_LIB="lib/libonnxruntime.dylib" ;;
+  macos-x64)     ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-x86_64-${ORT_VER}.tgz"; ORT_LIB="lib/libonnxruntime.dylib" ;;
   linux-x64)     ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-x64-${ORT_VER}.tgz"; ORT_LIB="lib/libonnxruntime.so" ;;
   linux-arm64)   ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-linux-aarch64-${ORT_VER}.tgz"; ORT_LIB="lib/libonnxruntime.so" ;;
   *) echo "  ⚠ Unsupported: $OS-$ARCH, skipping onnxruntime"; ORT_URL="" ;;
