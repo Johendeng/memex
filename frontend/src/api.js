@@ -52,6 +52,7 @@ export const api = {
   findSimilar: (fileId, limit = 10) => call('cmd_find_similar', { file_id: fileId, limit }),
   openFile: (path) => call('cmd_open_file', { path }),
   openFolder: (path) => call('cmd_open_folder', { path }),
+  pickFolder: () => call('cmd_pick_folder'),
   vectorStatus: () => call('cmd_vector_status'),
   embed: () => call('cmd_embed'),
   embedProgress: () => call('cmd_embed_progress'),

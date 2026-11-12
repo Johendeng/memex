@@ -63,6 +63,10 @@ version = "0.30"
 [dependencies.png]
 version = "0.17"
 
+# Native folder picker dialog (cross-platform: Win32/Cocoa/GTK)
+[dependencies.rfd]
+version = "0.15"
+
 [features]
 default = []
 pdfium = ["dep:pdfium-render"]
