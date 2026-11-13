@@ -9,7 +9,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::WalkDir;
 
 use crate::parser;
-use crate::store::{BigramIndex, FileRec, Meta};
+use crate::store::{self, BigramIndex, FileRec, Meta};
 
 // ---- progress tracking (polled by cmd_index_progress) ----
 pub static PROGRESS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -320,14 +320,24 @@ fn flush_title_batch(
     let adds: Vec<(i64, Vec<String>)> = std::mem::take(pending_adds);
     let files: Vec<FileRec> = std::mem::take(pending_files);
 
-    // 1. Apply adds to index in memory (brief write lock, no disk I/O)
+    // 1. Write title chunks to disk (NO lock held — disk I/O only)
+    let mut prewritten: Vec<(i64, Vec<String>, Vec<u64>)> = Vec::with_capacity(adds.len());
+    for (file_id, chunks) in &adds {
+        if chunks.is_empty() {
+            prewritten.push((*file_id, chunks.clone(), vec![]));
+        } else if let Some(offsets) = store::append_texts_to_disk(chunks) {
+            prewritten.push((*file_id, chunks.clone(), offsets));
+        }
+    }
+
+    // 2. Apply adds to index in memory (brief write lock, no disk I/O)
     {
         let mut ix = idx.write().unwrap();
-        for (file_id, chunks) in &adds {
+        for (file_id, chunks, offsets) in &prewritten {
             if chunks.is_empty() {
                 ix.remove_file(*file_id);
             } else {
-                ix.add_file(*file_id, chunks);
+                ix.add_file_with_prewritten(*file_id, chunks, offsets);
             }
         }
     }
@@ -409,6 +419,23 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
     PROGRESS_OCR_DONE.store(0, Ordering::Relaxed);
 
     if total == 0 {
+        // No new files to content-index, but still check if embedding is needed
+        let need_embed = {
+            let vec_path = crate::vector::vector_path()
+                .map(|p| p.exists())
+                .unwrap_or(false);
+            !vec_path
+        };
+        if need_embed && !crate::embed::EMBED_IN_PROGRESS.load(Ordering::Relaxed) {
+            eprintln!("auto-triggering embedding (background, non-blocking)...");
+            let idx_arc = idx.clone();
+            std::thread::spawn(move || {
+                let ix = idx_arc.read().unwrap();
+                if let Err(e) = crate::embed::embed_all_with_idx(&ix) {
+                    eprintln!("embedding failed: {e:#}");
+                }
+            });
+        }
         return Ok(());
     }
 
@@ -496,13 +523,24 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
         );
     }
 
-    // Auto-trigger embedding after content indexing completes (Q1=A)
-    if done > 0 {
-        eprintln!("auto-triggering embedding...");
-        let ix = idx.read().unwrap();
-        if let Err(e) = crate::embed::embed_all_with_idx(&ix) {
-            eprintln!("embedding failed: {e:#}");
-        }
+    // Auto-trigger embedding after content indexing completes.
+    // Runs in background thread (non-blocking) with low resource usage.
+    // Trigger when: new files indexed, OR vectors don't exist yet.
+    let need_embed = done > 0 || {
+        let vec_path = crate::vector::vector_path()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        !vec_path
+    };
+    if need_embed && !crate::embed::EMBED_IN_PROGRESS.load(Ordering::Relaxed) {
+        eprintln!("auto-triggering embedding (background, non-blocking)...");
+        let idx_arc = idx.clone();
+        std::thread::spawn(move || {
+            let ix = idx_arc.read().unwrap();
+            if let Err(e) = crate::embed::embed_all_with_idx(&ix) {
+                eprintln!("embedding failed: {e:#}");
+            }
+        });
     }
 
     Ok(())
@@ -520,11 +558,27 @@ fn flush_batch(
         return;
     }
     let batch: Vec<(i64, Vec<String>)> = std::mem::take(pending);
-    // Apply to index in memory (brief write lock, no disk I/O)
+
+    // Phase 1: write all texts to chunks.text (NO lock held — disk I/O only)
+    let mut prewritten: Vec<(i64, Vec<String>, Vec<u64>)> = Vec::with_capacity(batch.len());
+    for (file_id, chunks) in &batch {
+        if chunks.is_empty() {
+            prewritten.push((*file_id, chunks.clone(), vec![]));
+        } else if let Some(offsets) = store::append_texts_to_disk(chunks) {
+            prewritten.push((*file_id, chunks.clone(), offsets));
+        }
+    }
+
+    // Phase 2: remove old chunks + add new chunks in memory (brief write lock, no disk I/O)
     {
         let mut ix = idx.write().unwrap();
-        for (file_id, chunks) in &batch {
-            ix.replace_file(*file_id, chunks);
+        for (file_id, chunks, offsets) in &prewritten {
+            if chunks.is_empty() {
+                ix.remove_file(*file_id);
+            } else {
+                ix.remove_file(*file_id);
+                ix.add_file_with_prewritten(*file_id, chunks, offsets);
+            }
         }
     }
     // Save index to disk with read lock (allows concurrent search)
@@ -558,7 +612,16 @@ fn update_content_flags(meta: &Arc<Mutex<Meta>>, ids: &HashSet<i64>) {
 
 /// Full rebuild background — Phase 1 + Phase 2 in one background thread.
 /// Used by HTTP `cmd_index_run` mode="full".
+/// Resets content_indexed on all files so content phase will re-index everything.
 pub fn reindex_full_background(meta: Arc<Mutex<Meta>>, idx: Arc<RwLock<BigramIndex>>) {
+    // Force re-content-index: reset content_indexed flag on all files
+    {
+        let mut m = meta.lock().unwrap();
+        for f in &mut m.files {
+            f.content_indexed = false;
+        }
+        let _ = m.clone().save();
+    }
     if let Err(e) = index_titles_inner(&meta, &idx) {
         eprintln!("title indexing failed: {e:#}");
         PROGRESS_PHASE.store(0, Ordering::Relaxed);
@@ -795,10 +858,16 @@ fn process_watcher_events(
                     file_id
                 };
 
-                // Step 2: replace in index (brief idx write lock)
+                // Step 2: replace in index (disk I/O outside lock, then brief write lock)
                 {
+                    let offsets = store::append_texts_to_disk(&chunks);
                     let mut ix = idx.write().unwrap();
-                    ix.replace_file(file_id, &chunks);
+                    ix.remove_file(file_id);
+                    if let Some(offs) = offsets {
+                        if !chunks.is_empty() {
+                            ix.add_file_with_prewritten(file_id, &chunks, &offs);
+                        }
+                    }
                 }
                 meta_changed = true;
                 need_embed = true;
@@ -819,9 +888,18 @@ fn process_watcher_events(
         META_DIRTY.store(true, Ordering::Relaxed);
     }
 
-    // Note: embed_all is disabled in watcher to avoid ~1.5GB memory spike
-    // from loading ONNX model + processing all 698K chunks.
-    // Embedding can be triggered manually via cmd_embed or full reindex.
+    // Auto-trigger embedding in background after watcher changes.
+    // Now safe: streaming read + incremental write + ONNX thread limit.
+    if need_embed {
+        eprintln!("watcher: auto-triggering embedding (background)...");
+        let idx_arc = idx.clone();
+        std::thread::spawn(move || {
+            let ix = idx_arc.read().unwrap();
+            if let Err(e) = crate::embed::embed_all_with_idx(&ix) {
+                eprintln!("watcher embedding failed: {e:#}");
+            }
+        });
+    }
 
     Ok(())
 }

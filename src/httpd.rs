@@ -35,6 +35,23 @@ static SERVE_PORT: AtomicU16 = AtomicU16::new(18321);
 // ---------------------------------------------------------------- serve
 
 pub fn serve(port: u16, open: bool) -> Result<()> {
+    // Lower process priority so background indexing/embedding/OCR don't
+    // compete with the user's foreground work. ONNX Runtime's thread pool
+    // inherits this — when the user is active, the OS scheduler gives CPU
+    // to foreground apps; when idle, Memex uses spare cycles at full speed.
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetPriorityClass(h: isize, c: u32) -> i32;
+            fn GetCurrentProcess() -> isize;
+        }
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        unsafe {
+            let _ = SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+        }
+    }
+
     let meta = Arc::new(Mutex::new(Meta::load()?));
     let idx = Arc::new(RwLock::new(BigramIndex::load()?));
 
@@ -70,6 +87,21 @@ pub fn serve(port: u16, open: bool) -> Result<()> {
         let meta = meta.clone();
         let idx = idx.clone();
         std::thread::spawn(move || {
+            // Restore normal priority for HTTP handler threads so
+            // search/UI requests stay responsive even when background
+            // embedding is saturating CPU at BELOW_NORMAL priority.
+            #[cfg(windows)]
+            {
+                #[link(name = "kernel32")]
+                extern "system" {
+                    fn SetThreadPriority(h: isize, p: i32) -> i32;
+                    fn GetCurrentThread() -> isize;
+                }
+                const THREAD_PRIORITY_NORMAL: i32 = 0;
+                unsafe {
+                    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+                }
+            }
             if let Err(e) = handle(stream, meta, idx) {
                 eprintln!("http: {e:#}");
             }
@@ -219,6 +251,24 @@ fn write_json(stream: &mut std::net::TcpStream, status: u16, body: &[u8]) -> Res
     Ok(())
 }
 
+/// Acquire a read lock on the BigramIndex, recovering from poisoned locks
+/// (caused by a panic in a writer thread) and retrying briefly if a write
+/// lock is currently held (e.g. during batch indexing).
+fn recover_read(idx: &std::sync::RwLock<crate::store::BigramIndex>) -> std::sync::RwLockReadGuard<'_, crate::store::BigramIndex> {
+    // First attempt: try non-blocking
+    for _ in 0..60 {
+        match idx.try_read() {
+            Ok(g) => return g,
+            Err(std::sync::TryLockError::Poisoned(e)) => return e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+    // Last resort: blocking read (will block until writer releases)
+    idx.read().unwrap_or_else(|e| e.into_inner())
+}
+
 fn reason(c: u16) -> &'static str {
     match c {
         200 => "OK",
@@ -257,8 +307,9 @@ fn dispatch(
     }
     Ok(match cmd {
         "cmd_info" => {
+            // Acquire idx first (consistent lock ordering: idx → meta)
+            let ix = recover_read(&idx);
             let m = meta.lock().unwrap();
-            let ix = idx.read().unwrap();
             // file type distribution
             let mut ext_map: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
             let mut total_bytes: u64 = 0;
@@ -295,10 +346,48 @@ fn dispatch(
         }
         "cmd_folders_remove" => {
             let id = args.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            // 1. Remove from meta + reset content_indexed on all remaining files
+            //    (index files are deleted, so they need to be rebuilt from scratch)
             let mut m = meta.lock().unwrap();
             store::remove_folder(&mut m, id);
+            for f in m.files.iter_mut() {
+                f.content_indexed = false;
+            }
             m.save()?;
-            serde_json::json!({ "ok": true })
+            drop(m);
+
+            // 2. Delete all index files (will be rebuilt from remaining folders)
+            if let Ok(dir) = store::index_dir() {
+                for name in &[
+                    "index.bin",
+                    "chunks.text",
+                    "postings.bin",
+                    "postings.idx",
+                    "postings.delta",
+                    "vectors.bin",
+                ] {
+                    let p = dir.join(name);
+                    if p.exists() {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }
+
+            // 3. Reset in-memory BigramIndex to empty
+            {
+                let mut ix = idx.write().unwrap();
+                *ix = BigramIndex::default();
+            }
+
+            // 4. Trigger full reindex in background (scans remaining folders)
+            let meta_clone = meta.clone();
+            let idx_clone = idx.clone();
+            std::thread::spawn(move || {
+                indexer::reindex_full_background(meta_clone, idx_clone);
+            });
+
+            serde_json::json!({ "ok": true, "reindex": true })
         }
         "cmd_index_run" => {
             // Check if indexing is already running
@@ -336,8 +425,9 @@ fn dispatch(
             }
         }
         "cmd_search" => {
+            // Acquire idx first (consistent lock ordering: idx → meta)
+            let ix = recover_read(&idx);
             let m = meta.lock().unwrap();
-            let ix = idx.read().unwrap();
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let hybrid = args.get("hybrid").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -894,6 +984,15 @@ MCP endpoint: `POST {http_url}`
             } else {
                 0
             };
+            // Embedding progress (phase 3)
+            let embed_in_progress = embed::EMBED_IN_PROGRESS.load(Ordering::Relaxed);
+            let embed_total = embed::EMBED_TOTAL.load(Ordering::Relaxed);
+            let embed_done = embed::EMBED_DONE.load(Ordering::Relaxed);
+            let embed_percent = if embed_total > 0 {
+                embed_done * 100 / embed_total
+            } else {
+                0
+            };
             serde_json::json!({
                 "total": total,
                 "done": done,
@@ -907,6 +1006,10 @@ MCP endpoint: `POST {http_url}`
                 "ocr_total": ocr_total,
                 "ocr_done": ocr_done,
                 "ocr_percent": ocr_percent,
+                "embed_in_progress": embed_in_progress,
+                "embed_total": embed_total,
+                "embed_done": embed_done,
+                "embed_percent": embed_percent,
             })
         }
         // ---- update check / download / install ----
@@ -1057,70 +1160,85 @@ MCP endpoint: `POST {http_url}`
             if vec_idx.vectors.is_empty() {
                 serde_json::json!({ "hits": [], "error": "向量索引为空，请先在搜索页生成向量索引" })
             } else {
-                let m = meta.lock().unwrap();
-                let ix = idx.read().unwrap();
-                // Collect chunk_ids for this file
-                let file_chunks: Vec<u32> = ix.chunks.iter()
-                    .enumerate()
-                    .filter(|(_, c)| c.file_id == file_id)
-                    .map(|(i, _)| i as u32)
-                    .collect();
+                // Phase 1: briefly lock idx to collect this file's chunk IDs
+                let file_chunks: Vec<u32> = {
+                    let ix = recover_read(&idx);
+                    ix.chunks.iter()
+                        .enumerate()
+                        .filter(|(_, c)| c.file_id == file_id)
+                        .map(|(i, _)| i as u32)
+                        .collect()
+                };
+                // release idx lock here — heavy computation runs lock-free
+
                 if file_chunks.is_empty() {
                     serde_json::json!({ "hits": [], "error": "文件无索引数据" })
                 } else {
-                    // Average the file's chunk vectors into a centroid
-                    let dim = vec_idx.vectors[0].len();
-                    let mut centroid = vec![0.0f32; dim];
-                    let mut count = 0u32;
-                    for cid in &file_chunks {
-                        if let Some(v) = vec_idx.vectors.get(*cid as usize) {
-                            if !v.is_empty() {
-                                for (i, &x) in v.iter().enumerate() { centroid[i] += x; }
-                                count += 1;
+                    // Phase 2: compute centroid (no locks needed)
+                    // Use first non-empty vector for dim (vectors[0] may be empty)
+                    let dim = vec_idx.vectors.iter()
+                        .find(|v| !v.is_empty())
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    if dim == 0 {
+                        serde_json::json!({ "hits": [], "error": "向量维度异常" })
+                    } else {
+                        let mut centroid = vec![0.0f32; dim];
+                        let mut count = 0u32;
+                        for cid in &file_chunks {
+                            if let Some(v) = vec_idx.vectors.get(*cid as usize) {
+                                if !v.is_empty() && v.len() == dim {
+                                    for (i, &x) in v.iter().enumerate() { centroid[i] += x; }
+                                    count += 1;
+                                }
                             }
                         }
-                    }
-                    if count == 0 {
-                        serde_json::json!({ "hits": [], "error": "文件无向量数据" })
-                    } else {
-                        for x in &mut centroid { *x /= count as f32; }
-                        let file_chunk_set: HashSet<u32> = file_chunks.into_iter().collect();
-                        // Score all other chunks
-                        let mut scored: Vec<(u32, f32)> = vec_idx.vectors.iter()
-                            .enumerate()
-                            .filter_map(|(i, v)| {
-                                if v.is_empty() || file_chunk_set.contains(&(i as u32)) {
-                                    None
-                                } else {
-                                    Some((i as u32, vector::cosine(&centroid, v)))
-                                }
-                            })
-                            .collect();
-                        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-                        scored.truncate(limit * 5);
-                        // Dedup by file_id, keep highest
-                        let mut seen_files: HashSet<i64> = HashSet::new();
-                        let hits: Vec<serde_json::Value> = scored.iter()
-                            .filter_map(|(cid, score)| {
-                                let chunk = ix.chunks.get(*cid as usize)?;
-                                if seen_files.contains(&chunk.file_id) { return None; }
-                                seen_files.insert(chunk.file_id);
-                                let file = m.files.iter().find(|f| f.id == chunk.file_id)?;
-                                let folder = m.folders.iter().find(|fo| fo.id == file.folder_id)?;
-                                let snippet: String = ix.get_chunk_text(*cid).chars().take(200).collect();
-                                Some(serde_json::json!({
-                                    "file_id": chunk.file_id,
-                                    "folder_path": folder.path,
-                                    "rel_path": file.rel_path,
-                                    "ext": file.ext,
-                                    "chunk_seq": chunk.seq,
-                                    "snippet": snippet,
-                                    "rank": *score as f64,
-                                }))
-                            })
-                            .take(limit)
-                            .collect();
-                        serde_json::json!({ "hits": hits, "count": hits.len() })
+                        if count == 0 {
+                            serde_json::json!({ "hits": [], "error": "文件无向量数据" })
+                        } else {
+                            for x in &mut centroid { *x /= count as f32; }
+                            let file_chunk_set: HashSet<u32> = file_chunks.into_iter().collect();
+
+                            // Phase 3: brute-force cosine similarity (no locks)
+                            let mut scored: Vec<(u32, f32)> = vec_idx.vectors.iter()
+                                .enumerate()
+                                .filter_map(|(i, v)| {
+                                    if v.is_empty() || v.len() != dim || file_chunk_set.contains(&(i as u32)) {
+                                        None
+                                    } else {
+                                        Some((i as u32, vector::cosine(&centroid, v)))
+                                    }
+                                })
+                                .collect();
+                            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+                            scored.truncate(limit * 5);
+
+                            // Phase 4: briefly lock idx + meta to resolve top-K metadata
+                            let ix = recover_read(&idx);
+                            let m = meta.lock().unwrap();
+                            let mut seen_files: HashSet<i64> = HashSet::new();
+                            let hits: Vec<serde_json::Value> = scored.iter()
+                                .filter_map(|(cid, score)| {
+                                    let chunk = ix.chunks.get(*cid as usize)?;
+                                    if seen_files.contains(&chunk.file_id) { return None; }
+                                    seen_files.insert(chunk.file_id);
+                                    let file = m.files.iter().find(|f| f.id == chunk.file_id)?;
+                                    let folder = m.folders.iter().find(|fo| fo.id == file.folder_id)?;
+                                    let snippet: String = ix.get_chunk_text(*cid).chars().take(200).collect();
+                                    Some(serde_json::json!({
+                                        "file_id": chunk.file_id,
+                                        "folder_path": folder.path,
+                                        "rel_path": file.rel_path,
+                                        "ext": file.ext,
+                                        "chunk_seq": chunk.seq,
+                                        "snippet": snippet,
+                                        "rank": *score as f64,
+                                    }))
+                                })
+                                .take(limit)
+                                .collect();
+                            serde_json::json!({ "hits": hits, "count": hits.len() })
+                        }
                     }
                 }
             }

@@ -21,8 +21,7 @@
           <span class="toggle-label">语义检索</span>
         </label>
         <span class="vector-status" v-if="hybrid && vecReady" title="向量索引就绪">✓ {{ vecCount }} 条向量</span>
-        <button class="embed-btn" v-if="hybrid && !vecReady && !embedding" @click="doEmbed">生成向量索引</button>
-        <span class="embedding-hint" v-if="embedding">正在生成向量…</span>
+        <span class="vector-hint" v-if="hybrid && !vecReady" title="向量索引正在后台生成">语义向量后台生成中…</span>
         <span class="opt-sep"></span>
         <select v-model="extFilter" class="tag-select" @change="run" title="按文件类型过滤">
           <option value="">全部类型</option>
@@ -48,7 +47,15 @@
     </div>
 
     <!-- Find Similar results -->
-    <div v-if="similarMode && similarResults.length" class="card similar-card">
+    <div v-if="similarMode && similarLoading" class="card similar-card">
+      <div class="similar-header">
+        <span class="similar-label">正在查找相似文档…</span>
+        <span class="similar-origin" :title="similarOrigin">{{ similarOriginName }}</span>
+        <button class="btn ghost sm" @click="exitSimilar">返回搜索</button>
+      </div>
+      <div class="similar-loading">正在计算向量相似度，请稍候</div>
+    </div>
+    <div v-else-if="similarMode && similarResults.length" class="card similar-card">
       <div class="similar-header">
         <span class="similar-label">相似文档</span>
         <span class="similar-origin" :title="similarOrigin">{{ similarOriginName }}</span>
@@ -111,7 +118,7 @@ import MarkdownPreview from '../components/MarkdownPreview.vue'
 
 const tourSteps = [
   { selector: '.search-bar .input', title: '搜索框', text: '输入关键词或文件中的只言片语，回车或点击「搜索」即可检索知识库。支持 BM25 关键词匹配，高亮显示命中的片段。' },
-  { selector: '.search-bar .toggle', title: '语义检索', text: '开启后使用 bge-small-zh 语义向量 + BM25 关键词混合检索（RRF 融合）。适合查找"意思相近但用词不同"的内容。首次需生成向量索引。' },
+  { selector: '.search-bar .toggle', title: '语义检索', text: '开启后使用 bge-small-zh 语义向量 + BM25 关键词混合检索（RRF 融合）。适合查找"意思相近但用词不同"的内容。向量索引在后台自动生成，无需手动操作。' },
   { selector: '.search-bar .tag-select', title: '过滤', text: '按文件类型、分类维度和标签缩小搜索范围。文件类型支持 Markdown/PDF/Word/Excel/TXT；标签按维度+值过滤。' },
   { selector: '.hit', title: '搜索结果', text: '每条结果显示文件路径、匹配分数、chunk 序号和高亮片段。双击直接打开文件，点击👁预览MD，点击🔗查找相似文档，右键有更多操作。' },
 ]
@@ -124,7 +131,6 @@ const menu = ref(null)
 const hybrid = ref(false)
 const vecReady = ref(false)
 const vecCount = ref(0)
-const embedding = ref(false)
 const filterDims = ref([])
 const filterTags = ref([])
 const filterDim = ref('')
@@ -136,6 +142,7 @@ let hideTimer = null
 const similarMode = ref(false)
 const similarResults = ref([])
 const similarOrigin = ref('')
+const similarLoading = ref(false)
 const previewPath = ref('')
 const previewFileId = ref(0)
 
@@ -268,6 +275,7 @@ function onPreviewFromSimilar(s) {
 async function findSimilar(h) {
   menu.value = null
   similarMode.value = true
+  similarLoading.value = true
   similarResults.value = []
   similarOrigin.value = fullPath(h)
   msg.value = ''
@@ -280,12 +288,15 @@ async function findSimilar(h) {
       similarResults.value = r.hits || []
       if (!similarResults.value.length) msg.value = '未找到相似文档'
     }
-  } catch (e) { msg.value = e.message }
+  } catch (e) { msg.value = e.message } finally {
+    similarLoading.value = false
+  }
 }
 
 function exitSimilar() {
   similarMode.value = false
   similarResults.value = []
+  similarLoading.value = false
   similarOrigin.value = ''
   msg.value = ''
 }
@@ -308,7 +319,7 @@ async function run() {
     if (extFilter.value) filters.ext_filter = extFilter.value
     hits.value = await api.search(q.value.trim(), 20, hybrid.value, tagFilter, filters)
     if (!hits.value.length) {
-      if (hybrid.value && !vecReady.value) msg.value = '无结果。请先生成向量索引（点击上方「生成向量索引」）'
+      if (hybrid.value && !vecReady.value) msg.value = '无结果。语义向量正在后台生成中，完成后将自动启用语义搜索'
       else if (filterDim.value && filterTag.value) msg.value = '无结果（当前过滤范围：' + filterDim.value + '/' + filterTag.value + '）'
       else if (extFilter.value) msg.value = '无结果（当前类型过滤：' + extFilter.value + '）'
       else msg.value = '无结果'
@@ -371,18 +382,6 @@ async function checkVectors() {
 }
 
 function toggleHybrid() { hybrid.value = !hybrid.value }
-
-async function doEmbed() {
-  embedding.value = true
-  msg.value = ''
-  try {
-    await api.embed()
-    await checkVectors()
-    msg.value = `向量索引已生成（${vecCount.value} 条）`
-  } catch (e) {
-    msg.value = '向量生成失败：' + e.message
-  } finally { embedding.value = false }
-}
 </script>
 
 <style scoped>
@@ -492,19 +491,10 @@ async function doEmbed() {
   color: #4ade80;
   font-family: 'JetBrains Mono', 'Consolas', monospace;
 }
-.embed-btn {
-  font-size: 11px;
-  padding: 2px 8px;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  background: transparent;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.embed-btn:hover { background: rgba(245,158,11,.12); }
-.embedding-hint {
+.vector-hint {
   font-size: 11px;
   color: var(--muted);
+  font-style: italic;
 }
 .opt-sep {
   width: 1px;
@@ -625,6 +615,12 @@ async function doEmbed() {
 
 .similar-card {
   border: 1px solid var(--accent-dim);
+}
+.similar-loading {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
 }
 .similar-header {
   display: flex;

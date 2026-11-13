@@ -399,41 +399,35 @@ fn extract_pdf(path: &Path) -> Result<String> {
 #[cfg(feature = "pdfium")]
 fn extract_pdf_pdfium(path: &Path) -> Result<String> {
     use pdfium_render::prelude::*;
+    use std::sync::OnceLock;
 
-    // Try to bind to pdfium library next to exe, then system
-    let bindings = {
+    // Cache the Pdfium bindings so we don't re-search for the DLL on every call.
+    static PDFIUM: OnceLock<Option<Pdfium>> = OnceLock::new();
+    let pdfium = match PDFIUM.get_or_init(|| {
         // 1. Try bundled pdfium.dll next to exe
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
                 let dll = dir.join("pdfium.dll");
                 if dll.exists() {
-                    Pdfium::bind_to_library(dll.to_string_lossy().as_ref()).ok()
-                } else {
-                    None
+                    if let Ok(b) = Pdfium::bind_to_library(dll.to_string_lossy().as_ref()) {
+                        return Some(Pdfium::new(b));
+                    }
                 }
-            } else {
+            }
+        }
+        // 2. Try system library
+        match Pdfium::bind_to_system_library() {
+            Ok(b) => Some(Pdfium::new(b)),
+            Err(_) => {
+                eprintln!("[pdfium] pdfium library not found, falling back to pdf-extract");
                 None
             }
-        } else {
-            None
         }
+    }) {
+        Some(p) => p,
+        None => anyhow::bail!("pdfium not available"),
     };
 
-    let bindings = match bindings {
-        Some(b) => b,
-        None => {
-            // 2. Try system library
-            match Pdfium::bind_to_system_library() {
-                Ok(b) => b,
-                Err(_) => {
-                    eprintln!("[pdfium] pdfium library not found, falling back to pdf-extract");
-                    anyhow::bail!("pdfium not available");
-                }
-            }
-        }
-    };
-
-    let pdfium = Pdfium::new(bindings);
     let document = pdfium.load_pdf_from_file(path, None)
         .map_err(|e| anyhow::anyhow!("pdfium load failed: {e}"))?;
 

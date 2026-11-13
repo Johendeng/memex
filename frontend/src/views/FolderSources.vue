@@ -69,11 +69,28 @@ async function doIndex(prefix) {
   }, 400)
 
   try {
-    const s = await api.index.run()
+    await api.index.run()
+    // 索引是后台异步的，轮询直到完成
+    await new Promise((resolve) => {
+      const poll = setInterval(async () => {
+        try {
+          const p = await api.index.progress()
+          progress.value = p
+          if (!p.phase || p.phase === 0) {
+            clearInterval(poll)
+            resolve()
+          }
+        } catch (_) {
+          clearInterval(poll)
+          resolve()
+        }
+      }, 1000)
+    })
     clearInterval(timer)
     progress.value = null
-    const extra = s.skipped ? `,跳过 ${s.skipped}` : s.failed ? `,失败 ${s.failed}` : ''
-    setOk(`已索引 ${s.indexed} 个文件 / ${s.chunks} 个分块(扫描 ${s.scanned}${extra})`)
+    // 从 cmd_info 获取最终统计
+    const info = await api.info()
+    setOk(`已索引 ${info.files} 个文件 / ${info.chunks} 个分块`)
     await reload()
   } catch (e) {
     clearInterval(timer)
@@ -127,8 +144,32 @@ async function browse() {
   }
 }
 async function remove(id) {
-  try { await api.folders.remove(id); await reload() }
-  catch (e) { msg.value = e.message }
+  if (!confirm('移除文件源将同步删除关联的索引数据，剩余文件源将自动重新索引。确认移除？')) return
+  busy.value = true
+  status.value = '正在移除并重新索引…'
+  statusType.value = 'info'
+  try {
+    await api.folders.remove(id)
+    // Poll reindex progress until complete
+    await new Promise((resolve) => {
+      const timer = setInterval(async () => {
+        try {
+          const p = await api.index.progress()
+          if (p.phase === 0 || !p.phase) {
+            clearInterval(timer)
+            resolve()
+          }
+        } catch { clearInterval(timer); resolve() }
+      }, 800)
+    })
+    await reload()
+    const info = await api.info()
+    setOk(`已移除文件源，剩余 ${info.files} 个文件已重新索引`)
+  } catch (e) {
+    setErr(e.message)
+  } finally {
+    busy.value = false
+  }
 }
 async function reindex() {
   if (busy.value || !folders.value.length) return

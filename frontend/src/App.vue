@@ -20,16 +20,16 @@
       <h1 class="page-title">{{ title }}</h1>
       <router-view />
     </main>
-    <!-- OCR / content indexing progress bar (global, bottom-fixed) -->
-    <div v-if="ocrBar.visible" class="ocr-progress-bar">
+    <!-- Background task progress bar (global, bottom-fixed) -->
+    <div v-if="taskBar.visible" class="ocr-progress-bar">
       <div class="ocr-progress-inner">
-        <span class="ocr-icon">🔍</span>
-        <span class="ocr-label">{{ ocrBar.label }}</span>
-        <span class="ocr-counts">{{ ocrBar.done }}/{{ ocrBar.total }}</span>
+        <span class="ocr-icon">{{ taskBar.icon }}</span>
+        <span class="ocr-label">{{ taskBar.label }}</span>
+        <span class="ocr-counts">{{ taskBar.done }}/{{ taskBar.total }}</span>
         <div class="ocr-track">
-          <div class="ocr-fill" :style="{ width: ocrBar.percent + '%' }"></div>
+          <div class="ocr-fill" :style="{ width: taskBar.percent + '%' }"></div>
         </div>
-        <span class="ocr-percent">{{ ocrBar.percent }}%</span>
+        <span class="ocr-percent">{{ taskBar.percent }}%</span>
       </div>
     </div>
   </div>
@@ -50,10 +50,11 @@ const nav = [
 ]
 const title = computed(() => route.meta.title ?? '')
 
-// ---- Global OCR / indexing progress (bottom bar) ----
-const ocrBar = reactive({
+// ---- Global background task progress (bottom bar) ----
+const taskBar = reactive({
   visible: false,
-  label: 'OCR 进度',
+  icon: '🔍',
+  label: '',
   done: 0,
   total: 0,
   percent: 0,
@@ -68,34 +69,48 @@ async function pollProgress() {
     const ocrDone = p.ocr_done || 0
     const contentTotal = p.content_total || 0
     const contentDone = p.content_done || 0
+    const embedInProgress = p.embed_in_progress || false
+    const embedTotal = p.embed_total || 0
+    const embedDone = p.embed_done || 0
 
-    if (phase === 2 && ocrTotal > 0) {
+    // Phase 3: embedding (highest priority — runs after indexing)
+    if (embedInProgress) {
+      taskBar.icon = '🧠'
+      taskBar.label = '语义向量生成'
+      taskBar.done = embedDone
+      taskBar.total = embedTotal
+      taskBar.percent = p.embed_percent || 0
+      taskBar.visible = true
+    } else if (phase === 2 && ocrTotal > 0) {
       // OCR in progress — show OCR-specific bar
-      ocrBar.label = 'OCR 图片识别'
-      ocrBar.done = ocrDone
-      ocrBar.total = ocrTotal
-      ocrBar.percent = p.ocr_percent || 0
-      ocrBar.visible = true
+      taskBar.icon = '🔍'
+      taskBar.label = 'OCR 图片识别'
+      taskBar.done = ocrDone
+      taskBar.total = ocrTotal
+      taskBar.percent = p.ocr_percent || 0
+      taskBar.visible = true
     } else if (phase === 2 && contentTotal > 0) {
       // Content indexing (non-image files) — show content bar
-      ocrBar.label = '内容索引'
-      ocrBar.done = contentDone
-      ocrBar.total = contentTotal
-      ocrBar.percent = p.content_percent || 0
-      ocrBar.visible = true
+      taskBar.icon = '📄'
+      taskBar.label = '内容索引'
+      taskBar.done = contentDone
+      taskBar.total = contentTotal
+      taskBar.percent = p.content_percent || 0
+      taskBar.visible = true
     } else if (phase === 1) {
       // Title scanning phase
-      ocrBar.label = '文件扫描'
-      ocrBar.done = p.done || 0
-      ocrBar.total = p.total || 0
-      ocrBar.percent = p.percent || 0
-      ocrBar.visible = true
+      taskBar.icon = '📁'
+      taskBar.label = '文件扫描'
+      taskBar.done = p.done || 0
+      taskBar.total = p.total || 0
+      taskBar.percent = p.percent || 0
+      taskBar.visible = true
     } else {
-      ocrBar.visible = false
+      taskBar.visible = false
     }
   } catch (_) {
     // serve not running — silently hide
-    ocrBar.visible = false
+    taskBar.visible = false
   }
 }
 

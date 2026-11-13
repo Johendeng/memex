@@ -4,7 +4,7 @@ set -euo pipefail
 # Package Memex into a macOS .app bundle
 # Expects: target/release/memex (universal binary), assets/memex_icon.icns
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 APP="dist/Memex.app"
 
 rm -rf "$APP"

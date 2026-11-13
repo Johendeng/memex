@@ -1,3 +1,125 @@
+# v1.2.0 — 稳定性与性能优化 / Stability & Performance
+
+> 修复「查找相似」卡死、搜索被索引阻塞、向量生成 CPU 占用过高等关键问题。
+
+---
+
+## 中文
+
+### 🐛 Bug 修复
+
+#### 「查找相似」点击后搜索卡死（关键）
+- **三阶段锁拆分**：Phase 1 短暂锁获取文件分片列表 → Phase 2 完全无锁计算向量余弦相似度 → Phase 3 短暂锁解析元数据，彻底消除对搜索请求的阻塞
+- **空向量 panic 修复**：当 `vectors[0]` 为空向量（dim=0）时 centroid 计算越界 panic 导致线程死亡，改用 `iter().find(|v| !v.is_empty())` 安全获取维度
+- **前端 loading 状态**：点击后添加 `similarLoading` 指示器，避免空白页面
+
+#### 搜索被索引阻塞
+- 磁盘 I/O 移出写锁（`append_texts_to_disk` 无锁写入）
+- 新增 `recover_read` 机制：try_read 失败后重试 60×50ms
+- 统一锁顺序 idx→meta，消除死锁风险
+- 验证：索引过程中搜索 0-2ms
+
+#### 软件卡死（pdfium.dll 缺失）
+- 缺失 pdfium.dll 时 panic 导致锁中毒，所有后续操作卡死
+- 已通过 OnceLock 延迟初始化 + 友好错误提示修复
+
+### ⚡ 性能优化
+
+#### 语义向量生成 CPU 占用 80%+
+- 进程级 `SetPriorityClass(BELOW_NORMAL_PRIORITY_CLASS)` via kernel32 FFI
+- HTTP 线程恢复 `SetThreadPriority(THREAD_PRIORITY_NORMAL)`
+- ONNX Runtime 32 线程全部继承 BelowNormal 优先级，不影响用户其他操作
+
+### ✨ 新功能
+
+#### OCR 结果缓存
+- 索引重建时复用已有 OCR 结果，避免重复识别
+- FNV hash 缓存键，除非 OCR 结果被删除否则不重复 OCR
+
+#### 文件源移除同步清理
+- 移除文件源时提醒将同步移除关联索引文件
+- 用户确认后一并清理，避免残留无效索引
+
+#### 后台索引进度可视化
+- 页面底部 taskBar 实时展示后台索引/向量化进度
+- 用户对后台操作有感知，不再"悄悄干"
+
+#### 移除搜索栏向量生成按钮
+- 索引和向量化步骤不再影响用户正常操作
+- 全部转为后台非阻塞执行
+
+### 📦 安装包
+
+| 平台 | 文件 | 说明 |
+|------|------|------|
+| Windows | `Memex-Setup-1.2.0.exe` | Inno Setup 安装程序，x86_64 |
+| macOS | `Memex-macOS-universal.tar.gz` | Universal Binary (Intel + Apple Silicon) |
+| Linux | `Memex-x86_64.AppImage` | 免安装，一个文件通吃所有发行版 |
+
+### 📝 许可
+
+Apache-2.0 · Copyright 2026 JohenDeng
+
+---
+
+## English
+
+### 🐛 Bug Fixes
+
+#### "Find Similar" freezes search (critical)
+- **Three-phase lock split**: Phase 1 briefly locks to get chunk list → Phase 2 fully lock-free cosine similarity computation → Phase 3 briefly locks for metadata, eliminating all blocking of search requests
+- **Empty vector panic fix**: `vectors[0]` could be empty (dim=0) causing centroid index-out-of-bounds panic and thread death; now uses `iter().find(|v| !v.is_empty())` for safe dimension lookup
+- **Frontend loading state**: added `similarLoading` indicator to avoid blank page after click
+
+#### Search blocked by indexing
+- Disk I/O moved out of write lock (`append_texts_to_disk` lock-free writes)
+- Added `recover_read` mechanism: retries 60×50ms on try_read failure
+- Unified lock ordering idx→meta, eliminating deadlock risk
+- Verified: search during indexing completes in 0-2ms
+
+#### App freeze (missing pdfium.dll)
+- Missing pdfium.dll caused panic → lock poisoning → all subsequent operations frozen
+- Fixed via OnceLock lazy initialization + friendly error message
+
+### ⚡ Performance
+
+#### Embedding generation CPU usage 80%+
+- Process-level `SetPriorityClass(BELOW_NORMAL_PRIORITY_CLASS)` via kernel32 FFI
+- HTTP threads restored to `SetThreadPriority(THREAD_PRIORITY_NORMAL)`
+- ONNX Runtime 32 threads all inherit BelowNormal priority, no impact on user's other tasks
+
+### ✨ New Features
+
+#### OCR result caching
+- Reuses existing OCR results on index rebuild, avoiding redundant recognition
+- FNV hash cache keys; no repeat OCR unless results are deleted
+
+#### File source removal cleanup
+- Removing a file source now prompts that associated index files will be removed
+- Cleanup executed after user confirmation, preventing stale index remnants
+
+#### Background indexing progress visualization
+- Bottom taskBar shows real-time indexing/embedding progress
+- Users have visibility into background operations
+
+#### Removed vector generation button from search bar
+- Indexing and vectorization no longer interfere with normal operation
+- All converted to background non-blocking execution
+
+### 📦 Installers
+
+| Platform | File | Notes |
+|----------|------|-------|
+| Windows | `Memex-Setup-1.2.0.exe` | Inno Setup installer, x86_64 |
+| macOS | `Memex-macOS-universal.tar.gz` | Universal Binary (Intel + Apple Silicon) |
+| Linux | `Memex-x86_64.AppImage` | No installation needed, single file for all distros |
+
+### 📝 License
+
+Apache-2.0 · Copyright 2026 JohenDeng
+
+---
+
 # v1.1.0 — 首个公开发布 / First Public Release
 
 > Memex 本地知识库 + AI 记忆体，三平台首发。

@@ -35,6 +35,35 @@ fn chunks_text_path() -> Result<PathBuf> {
     Ok(index_dir()?.join("chunks.text"))
 }
 
+/// Append texts to chunks.text on disk and return per-chunk start byte offsets.
+/// This is the disk I/O phase that should be done WITHOUT holding the idx write lock.
+/// Returns None on I/O error.
+pub fn append_texts_to_disk(texts: &[String]) -> Option<Vec<u64>> {
+    let path = chunks_text_path().ok()?;
+    let current_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    let mut offsets = Vec::with_capacity(texts.len());
+    let mut offset = current_size;
+    for text in texts {
+        offsets.push(offset);
+        offset += text.len() as u64;
+    }
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+
+    for text in texts {
+        file.write_all(text.as_bytes()).ok()?;
+    }
+    file.flush().ok()?;
+
+    Some(offsets)
+}
+
 /// Path to the external postings data file (raw posting bytes).
 fn postings_path() -> Result<PathBuf> {
     Ok(index_dir()?.join("postings.bin"))
@@ -659,60 +688,100 @@ impl BigramIndex {
         result
     }
 
+    /// Read texts for chunks [start, end) using file seek — avoids loading
+    /// the entire chunks.text into memory. Returns one String per chunk.
+    /// Dead chunks (file_id==0 or empty text) get String::from(" ").
+    pub fn read_texts_batch(&self, start: usize, end: usize) -> Vec<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let path = match chunks_text_path() {
+            Ok(p) => p,
+            Err(_) => return vec![String::new(); end - start],
+        };
+        let mut file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return vec![String::new(); end - start],
+        };
+        let mut result = Vec::with_capacity(end - start);
+        for i in start..end {
+            if i + 1 >= self.text_offsets.len() {
+                result.push(String::new());
+                continue;
+            }
+            let s = self.text_offsets[i];
+            let e = self.text_offsets[i + 1];
+            if s >= e {
+                result.push(String::new());
+                continue;
+            }
+            if file.seek(SeekFrom::Start(s)).is_err() {
+                result.push(String::new());
+                continue;
+            }
+            let mut buf = vec![0u8; (e - s) as usize];
+            if file.read_exact(&mut buf).is_err() {
+                result.push(String::new());
+                continue;
+            }
+            result.push(String::from_utf8_lossy(&buf).into_owned());
+        }
+        result
+    }
+
     /// Append a file's chunks to the index.
     /// In mmap mode, postings go to delta HashMap (not main mmap).
     pub fn add_file(&mut self, file_id: i64, texts: &[String]) {
+        // Write texts to disk first, then update memory with pre-computed offsets
+        let offsets = match append_texts_to_disk(texts) {
+            Some(o) => o,
+            None => return,
+        };
+        self.add_file_with_prewritten(file_id, texts, &offsets);
+    }
+
+    /// Add file's chunks to in-memory index using pre-written disk offsets.
+    /// The caller must have already appended the texts to chunks.text via
+    /// `append_texts_to_disk()` and provides the per-chunk start offsets.
+    /// This method does NO disk I/O — safe to call while holding the write lock briefly.
+    pub fn add_file_with_prewritten(
+        &mut self,
+        file_id: i64,
+        texts: &[String],
+        chunk_offsets: &[u64],
+    ) {
+        if chunk_offsets.len() != texts.len() {
+            eprintln!(
+                "add_file_with_prewritten: offset/text length mismatch ({} vs {})",
+                chunk_offsets.len(),
+                texts.len()
+            );
+            return;
+        }
         let mmap_mode = self.postings_mmap.is_some();
         if !mmap_mode {
             self.ensure_indexing_mode();
         }
-        let path = match chunks_text_path() {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("add_file: cannot resolve chunks.text path");
-                return;
-            }
-        };
 
-        let current_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // The first chunk's offset is the base (current end of chunks.text).
+        let base = chunk_offsets.first().copied().unwrap_or(0);
 
         // Ensure text_offsets has sentinel: length = chunks.len() + 1
         if self.text_offsets.is_empty() {
-            self.text_offsets.push(current_size);
+            self.text_offsets.push(base);
         }
         while self.text_offsets.len() < self.chunks.len() {
-            self.text_offsets.insert(self.text_offsets.len() - 1, current_size);
+            self.text_offsets.insert(self.text_offsets.len() - 1, base);
         }
         if self.text_offsets.len() == self.chunks.len() {
-            self.text_offsets.push(current_size);
+            self.text_offsets.push(base);
         }
-
-        use std::io::Write;
-        let mut file = match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("add_file: open chunks.text failed: {e}");
-                return;
-            }
-        };
 
         let mut ids = Vec::with_capacity(texts.len());
         for (seq, text) in texts.iter().enumerate() {
             let chunk_id = self.chunks.len() as u32;
             let char_len = text.chars().count() as u32;
 
-            let start_offset = self.text_offsets[self.chunks.len()];
-            let byte_len = text.len() as u64;
-            let new_end = start_offset + byte_len;
-
-            if let Err(e) = file.write_all(text.as_bytes()) {
-                eprintln!("add_file: write chunks.text failed: {e}");
-                return;
-            }
+            let start_offset = chunk_offsets[seq];
+            let new_end = start_offset + text.len() as u64;
 
             // Insert start_offset before sentinel
             let sentinel_idx = self.chunks.len();
@@ -739,8 +808,6 @@ impl BigramIndex {
             }
             ids.push(chunk_id);
         }
-
-        let _ = file.flush();
         self.file_chunks.insert(file_id, ids);
     }
 

@@ -113,11 +113,26 @@ impl BgeEmbedder {
     }
 }
 
-/// 对所有已索引 chunk 做嵌入，保存到 vectors.bin。
+/// RAII guard: resets EMBED_IN_PROGRESS when dropped (success or error).
+struct EmbedGuard;
+impl Drop for EmbedGuard {
+    fn drop(&mut self) {
+        EMBED_IN_PROGRESS.store(false, Ordering::Relaxed);
+    }
+}
+
+/// 对所有已索引 chunk 做嵌入，流式写入 vectors.bin。
 /// 调用前提：index.bin 中已有 chunk（先跑 `memex index`）。
 /// 使用传入的共享索引引用（避免重复加载 976MB index.bin）。
+///
+/// 优化要点（v1.2）：
+/// - 流式读取 chunks.text（按 batch seek+read，不全量加载）
+/// - 增量写入临时文件，最后 rename（内存峰值 ≈ 1 batch）
+/// - ONNX 线程限制为 2，batch=16，每 batch sleep 10ms 让出 CPU
+/// - 不在搜索栏暴露按钮，由 indexer 自动后台触发
 pub fn embed_all_with_idx(idx: &crate::store::BigramIndex) -> Result<()> {
     use crate::vector;
+    use std::io::Write;
 
     if idx.chunks.is_empty() {
         anyhow::bail!("no chunks in index — run `memex index` first");
@@ -126,50 +141,83 @@ pub fn embed_all_with_idx(idx: &crate::store::BigramIndex) -> Result<()> {
     let total = idx.chunks.len() as u64;
     EMBED_TOTAL.store(total, Ordering::Relaxed);
     EMBED_DONE.store(0, Ordering::Relaxed);
+    EMBED_IN_PROGRESS.store(true, Ordering::Relaxed);
+
+    // Ensure EMBED_IN_PROGRESS is reset even on error
+    let _guard = EmbedGuard;
+
+    // Limit ONNX Runtime threads to reduce CPU pressure
+    // (must be set before model initialization)
+    std::env::set_var("OMP_NUM_THREADS", "2");
 
     eprintln!("loading bge-small-zh-v1.5 model (from local models/ dir)…");
     let embedder = BgeEmbedder::new()?;
-    eprintln!("model loaded. embedding {} chunks…", idx.chunks.len());
+    eprintln!("model loaded. embedding {} chunks (streaming, batch=16)…", total);
 
-    let mut vec_idx = vector::VectorIndex::default();
-    vec_idx.vectors = vec![Vec::new(); idx.chunks.len()];
+    // Stream vectors to a temp file, then rename → vectors.bin
+    let vec_path = vector::vector_path()?;
+    let tmp_path = vec_path.with_extension("bin.tmp");
+    let mut file = std::fs::File::create(&tmp_path)
+        .with_context(|| format!("无法创建临时向量文件: {}", tmp_path.display()))?;
 
-    // Skip dead chunks (file_id == 0 = removed but position retained for
-    // chunk_id stability). They get an empty vector; never retrieved because
-    // their postings have been pruned from the bigram index.
-    // Plan B: read all chunk texts from chunks.text file (sequential read)
-    let all_texts = idx.read_all_texts();
-    const BATCH: usize = 32;
+    // bincode format for Vec<Vec<f32>>: u64(outer_len) + for each: u64(inner_len) + data
+    // Write outer length header
+    file.write_all(&(idx.chunks.len() as u64).to_le_bytes())?;
+
+    const BATCH: usize = 16;
     let mut done = 0usize;
     for start in (0..idx.chunks.len()).step_by(BATCH) {
         let end = std::cmp::min(start + BATCH, idx.chunks.len());
-        let batch: Vec<String> = (start..end)
+
+        // Stream-read only this batch's texts from chunks.text file
+        let all_texts = idx.read_texts_batch(start, end);
+
+        let batch: Vec<String> = (0..all_texts.len())
             .map(|i| {
                 let text = &all_texts[i];
-                if idx.chunks[i].file_id == 0 || text.trim().is_empty() {
+                if idx.chunks[start + i].file_id == 0 || text.trim().is_empty() {
                     String::from(" ")
                 } else {
                     text.clone()
                 }
             })
             .collect();
+
         let embeddings = embedder.embed_batch(&batch)?;
+
         for (i, emb) in embeddings.into_iter().enumerate() {
-            // Dead chunks: store empty vector to save memory
-            if idx.chunks[start + i].file_id == 0 {
-                vec_idx.vectors[start + i] = Vec::new();
+            let chunk = &idx.chunks[start + i];
+            if chunk.file_id == 0 {
+                // Dead chunk: write empty vector (bincode: u64(0))
+                file.write_all(&0u64.to_le_bytes())?;
             } else {
-                vec_idx.vectors[start + i] = emb;
+                // Write inner length + f32 data (bincode-compatible)
+                file.write_all(&(emb.len() as u64).to_le_bytes())?;
+                let bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(emb.as_ptr() as *const u8, emb.len() * 4)
+                };
+                file.write_all(bytes)?;
             }
         }
+
         done = end;
         EMBED_DONE.store(done as u64, Ordering::Relaxed);
-        eprint!("\r  {done}/{} chunks", idx.chunks.len());
+        eprint!("
+  {done}/{} chunks", idx.chunks.len());
+
+        // Yield CPU between batches to avoid hogging
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     eprintln!();
-    vec_idx.save()?;
-    let dim = vec_idx.vectors.iter().find(|v| !v.is_empty()).map(|v| v.len()).unwrap_or(0);
-    eprintln!("embedded {} chunks ({}-dim) → vectors.bin", done, dim);
+
+    file.flush()?;
+    drop(file);
+
+    // Atomic rename → vectors.bin
+    std::fs::rename(&tmp_path, &vec_path)
+        .with_context(|| format!("rename {:?} → {:?}", tmp_path, vec_path))?;
+
+    eprintln!("embedded {} chunks → vectors.bin (streaming write)", done);
     Ok(())
 }
 

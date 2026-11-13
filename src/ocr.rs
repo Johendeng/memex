@@ -88,8 +88,15 @@ pub fn engine() -> Option<MutexGuard<'static, rusto::RustO>> {
 }
 
 /// Extract text from an image file using OCR.
+/// Results are cached to `data/ocr_cache/<hash>.txt` keyed by (path + mtime + size).
+/// Re-indexing reuses cached results; only deleting the cache forces re-OCR.
 /// Returns Ok(text) on success, Ok(empty) if engine not available.
 pub fn extract_text(path: &Path) -> Result<String> {
+    // Check cache first
+    if let Some(cached) = read_cache(path) {
+        return Ok(cached);
+    }
+
     let mut engine = match engine() {
         Some(g) => g,
         None => return Ok(String::new()),
@@ -98,20 +105,72 @@ pub fn extract_text(path: &Path) -> Result<String> {
     let img = rusto::ImageSource::Path(path.to_path_buf());
     let opts = rusto::OcrRunOptions::default();
 
-    match engine.detect_text(&img, &opts) {
+    let result = match engine.detect_text(&img, &opts) {
         Ok(rusto::DetectTextResult::Structured(results)) => {
             let text: Vec<String> = results.iter()
                 .map(|r| r.text.clone())
                 .collect();
-            Ok(text.join("\n"))
+            text.join("\n")
         }
         Ok(rusto::DetectTextResult::Spatial(text)) => {
-            Ok(text)
+            text
         }
         Err(e) => {
             eprintln!("[ocr] failed for {}: {e}", path.display());
-            Ok(String::new())
+            return Ok(String::new());
         }
+    };
+
+    // Save to cache
+    write_cache(path, &result);
+
+    Ok(result)
+}
+
+// ── OCR result cache ──────────────────────────────────────────────
+
+/// Compute a cache key from the file's path + mtime + size.
+/// If the image file changes, the key changes → cache miss → re-OCR.
+fn cache_key(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let size = meta.len();
+    // Use the absolute path string for uniqueness
+    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let key = format!("{}|{}|{}", abs.display(), mtime, size);
+    // Simple FNV-1a hash → compact filename
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in key.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Some(format!("{:016x}", hash))
+}
+
+fn cache_dir() -> Option<std::path::PathBuf> {
+    let dir = crate::config::data_dir().join("ocr_cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+fn read_cache(path: &Path) -> Option<String> {
+    let key = cache_key(path)?;
+    let dir = cache_dir()?;
+    let cache_file = dir.join(format!("{key}.txt"));
+    if cache_file.exists() {
+        std::fs::read_to_string(&cache_file).ok()
+    } else {
+        None
+    }
+}
+
+fn write_cache(path: &Path, text: &str) {
+    if let (Some(key), Some(dir)) = (cache_key(path), cache_dir()) {
+        let cache_file = dir.join(format!("{key}.txt"));
+        let _ = std::fs::write(&cache_file, text);
     }
 }
 
