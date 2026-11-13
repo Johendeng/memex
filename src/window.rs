@@ -432,13 +432,36 @@ pub fn run_mode_selector() -> Result<()> {
                 }
             }
 
+            // The exe can still be locked by the installer's Restart Manager
+            // for a few seconds after setup finishes ("os error 50"). Spawn
+            // failures used to exit silently — no tray, no window, no hint.
+            // Retry with backoff, and only give up after showing a message box.
+            let spawn_with_retry = |cmd: &mut std::process::Command| -> std::io::Result<std::process::Child> {
+                let mut last_err = None;
+                for attempt in 1..=10 {
+                    match cmd.spawn() {
+                        Ok(child) => return Ok(child),
+                        Err(e) => {
+                            crate::applog::log(&format!(
+                                "selector: spawn attempt {attempt}/10 failed: {e}"
+                            ));
+                            last_err = Some(e);
+                            std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+                        }
+                    }
+                }
+                Err(last_err.unwrap_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::Other, "spawn retry exhausted")
+                }))
+            };
+
             let (mode, spawn_result) = match body.as_str() {
                 ("tray") => {
-                    let r = cmd.arg("serve").arg("--no-window").spawn();
+                    let r = spawn_with_retry(cmd.arg("serve").arg("--no-window"));
                     ("tray", r)
                 }
                 ("window") => {
-                    let r = cmd.arg("serve").spawn();
+                    let r = spawn_with_retry(cmd.arg("serve"));
                     ("window", r)
                 }
                 _ => return,
@@ -478,8 +501,38 @@ pub fn run_mode_selector() -> Result<()> {
                 }
                 Err(e) => {
                     crate::applog::log(&format!(
-                        "selector: FAILED to spawn '{mode}' mode: {e}"
+                        "selector: FAILED to spawn '{mode}' mode after retries: {e}"
                     ));
+                    // Never fail silently — the user would see the selector
+                    // close with no tray icon and no explanation.
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::ffi::OsStrExt;
+                        let text = format!(
+                            "Memex 启动失败: {e}\n\n请稍后重新启动 Memex。"
+                        );
+                        let caption = "Memex";
+                        let text_w: Vec<u16> = std::ffi::OsString::from(text)
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        let caption_w: Vec<u16> = std::ffi::OsString::from(caption)
+                            .encode_wide()
+                            .chain(std::iter::once(0))
+                            .collect();
+                        #[link(name = "user32")]
+                        extern "system" {
+                            fn MessageBoxW(
+                                hwnd: isize,
+                                text: *const u16,
+                                caption: *const u16,
+                                utype: u32,
+                            ) -> i32;
+                        }
+                        unsafe {
+                            MessageBoxW(0, text_w.as_ptr(), caption_w.as_ptr(), 0x10); // MB_ICONERROR
+                        }
+                    }
                 }
             }
             exit_flag_ipc.store(true, Ordering::SeqCst);

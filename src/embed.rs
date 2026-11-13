@@ -134,6 +134,22 @@ pub fn embed_all_with_idx(idx_arc: &std::sync::Arc<std::sync::RwLock<crate::stor
     use crate::vector;
     use std::io::Write;
 
+    // Atomically claim the "in progress" flag FIRST. Callers check the flag
+    // before spawning this function, but their check-then-spawn is racy: the
+    // file watcher can fire again (every ~2s) while a freshly spawned thread
+    // is still cloning chunks_meta below — before the old code set the flag.
+    // Two concurrent embeds both File::create the same vectors.bin.tmp and
+    // truncate each other's output → corrupted vector file.
+    if EMBED_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        eprintln!("embedding already in progress — skipping duplicate trigger");
+        return Ok(());
+    }
+    // RAII guard: resets the flag on any exit path (error or success).
+    let _guard = EmbedGuard;
+
     // Clone chunk metadata ( lightweight: ~16 bytes per chunk) under a brief
     // read lock, then release.  This avoids holding the read lock for the
     // entire embedding duration, which would block the file watcher's write
@@ -150,10 +166,6 @@ pub fn embed_all_with_idx(idx_arc: &std::sync::Arc<std::sync::RwLock<crate::stor
     let total = chunks_count as u64;
     EMBED_TOTAL.store(total, Ordering::Relaxed);
     EMBED_DONE.store(0, Ordering::Relaxed);
-    EMBED_IN_PROGRESS.store(true, Ordering::Relaxed);
-
-    // Ensure EMBED_IN_PROGRESS is reset even on error
-    let _guard = EmbedGuard;
 
     // Limit ONNX Runtime threads to reduce CPU pressure
     // (must be set before model initialization)

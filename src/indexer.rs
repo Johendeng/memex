@@ -179,6 +179,12 @@ fn index_titles_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) -
 
             let path = entry.path();
             let norm = path.to_string_lossy().replace('\\', "/");
+            // Never index our own data directory (logs, index files, lock
+            // files) — including it means watching our own writes.
+            if is_own_data_path(&norm) {
+                stats.skipped += 1;
+                continue;
+            }
             if globset.is_match(&norm) {
                 stats.skipped += 1;
                 continue;
@@ -666,6 +672,21 @@ pub fn index_all(meta: &mut Meta) -> Result<IndexStats> {
 
 // ===================================================== File watcher
 
+/// 判断路径是否位于 Memex 自身数据目录内（`<home>/data/`）。
+/// watcher / 全量扫描都必须跳过这些文件：日志、索引、锁文件、更新缓存
+/// 都在 data/ 下持续变化，索引它们会造成 watcher 自触发死循环
+/// （写日志→触发 watcher→再写日志→…）。
+fn is_own_data_path(norm_path: &str) -> bool {
+    use std::sync::OnceLock;
+    static OWN_DATA_PREFIX: OnceLock<String> = OnceLock::new();
+    let prefix = OWN_DATA_PREFIX.get_or_init(|| {
+        crate::config::data_dir()
+            .to_string_lossy()
+            .replace('\\', "/")
+    });
+    norm_path.starts_with(prefix.as_str())
+}
+
 /// 启动文件监听 — 自动增量更新索引（Q3）。
 ///
 /// 监听所有已注册文件夹，文件变更时 debounce 2 秒后增量更新。
@@ -700,6 +721,11 @@ pub fn start_watcher(
                         if let Some(p) =
                             ev.paths.first().map(|p| p.to_string_lossy().replace('\\', "/"))
                         {
+                            // Ignore events on our own data dir up front —
+                            // log/index churn there would loop forever.
+                            if is_own_data_path(&p) {
+                                continue;
+                            }
                             let action = match ev.kind {
                                 notify::EventKind::Remove(_) => WatchAction::Delete,
                                 _ => WatchAction::Update,
@@ -759,6 +785,11 @@ fn process_watcher_events(
     let mut need_embed = false;
 
     for (path_str, action) in events {
+        // Skip files inside our own data directory (log/index/lock churn
+        // here would re-trigger the watcher forever — a self-feedback loop).
+        if is_own_data_path(&path_str.replace('\\', "/")) {
+            continue;
+        }
         let Some((folder_id, rel_path)) = find_folder(&folder_paths, path_str) else {
             continue;
         };
