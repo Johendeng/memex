@@ -567,8 +567,7 @@ fn dispatch(
                 embed::EMBED_IN_PROGRESS.store(true, Ordering::Relaxed);
                 let idx_arc = idx.clone();
                 std::thread::spawn(move || {
-                    let ix = idx_arc.read().unwrap();
-                    if let Err(e) = embed::embed_all_with_idx(&ix) {
+                    if let Err(e) = embed::embed_all_with_idx(&idx_arc) {
                         eprintln!("embedding failed: {e}");
                     }
                     embed::EMBED_IN_PROGRESS.store(false, Ordering::Relaxed);

@@ -430,8 +430,7 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
             eprintln!("auto-triggering embedding (background, non-blocking)...");
             let idx_arc = idx.clone();
             std::thread::spawn(move || {
-                let ix = idx_arc.read().unwrap();
-                if let Err(e) = crate::embed::embed_all_with_idx(&ix) {
+                if let Err(e) = crate::embed::embed_all_with_idx(&idx_arc) {
                     eprintln!("embedding failed: {e:#}");
                 }
             });
@@ -536,8 +535,7 @@ fn index_content_inner(meta: &Arc<Mutex<Meta>>, idx: &Arc<RwLock<BigramIndex>>) 
         eprintln!("auto-triggering embedding (background, non-blocking)...");
         let idx_arc = idx.clone();
         std::thread::spawn(move || {
-            let ix = idx_arc.read().unwrap();
-            if let Err(e) = crate::embed::embed_all_with_idx(&ix) {
+            if let Err(e) = crate::embed::embed_all_with_idx(&idx_arc) {
                 eprintln!("embedding failed: {e:#}");
             }
         });
@@ -894,8 +892,7 @@ fn process_watcher_events(
         eprintln!("watcher: auto-triggering embedding (background)...");
         let idx_arc = idx.clone();
         std::thread::spawn(move || {
-            let ix = idx_arc.read().unwrap();
-            if let Err(e) = crate::embed::embed_all_with_idx(&ix) {
+            if let Err(e) = crate::embed::embed_all_with_idx(&idx_arc) {
                 eprintln!("watcher embedding failed: {e:#}");
             }
         });

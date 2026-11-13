@@ -130,15 +130,24 @@ impl Drop for EmbedGuard {
 /// - 增量写入临时文件，最后 rename（内存峰值 ≈ 1 batch）
 /// - ONNX 线程限制为 2，batch=16，每 batch sleep 10ms 让出 CPU
 /// - 不在搜索栏暴露按钮，由 indexer 自动后台触发
-pub fn embed_all_with_idx(idx: &crate::store::BigramIndex) -> Result<()> {
+pub fn embed_all_with_idx(idx_arc: &std::sync::Arc<std::sync::RwLock<crate::store::BigramIndex>>) -> Result<()> {
     use crate::vector;
     use std::io::Write;
 
-    if idx.chunks.is_empty() {
+    // Clone chunk metadata ( lightweight: ~16 bytes per chunk) under a brief
+    // read lock, then release.  This avoids holding the read lock for the
+    // entire embedding duration, which would block the file watcher's write
+    // lock and — because Windows SRW locks are fair — deadlock all searches.
+    let (chunks_count, chunks_meta): (usize, Vec<crate::store::ChunkRec>) = {
+        let ix = idx_arc.read().unwrap_or_else(|e| e.into_inner());
+        (ix.chunks.len(), ix.chunks.clone())
+    };
+
+    if chunks_count == 0 {
         anyhow::bail!("no chunks in index — run `memex index` first");
     }
 
-    let total = idx.chunks.len() as u64;
+    let total = chunks_count as u64;
     EMBED_TOTAL.store(total, Ordering::Relaxed);
     EMBED_DONE.store(0, Ordering::Relaxed);
     EMBED_IN_PROGRESS.store(true, Ordering::Relaxed);
@@ -162,20 +171,25 @@ pub fn embed_all_with_idx(idx: &crate::store::BigramIndex) -> Result<()> {
 
     // bincode format for Vec<Vec<f32>>: u64(outer_len) + for each: u64(inner_len) + data
     // Write outer length header
-    file.write_all(&(idx.chunks.len() as u64).to_le_bytes())?;
+    file.write_all(&(chunks_count as u64).to_le_bytes())?;
 
     const BATCH: usize = 16;
     let mut done = 0usize;
-    for start in (0..idx.chunks.len()).step_by(BATCH) {
-        let end = std::cmp::min(start + BATCH, idx.chunks.len());
+    for start in (0..chunks_count).step_by(BATCH) {
+        let end = std::cmp::min(start + BATCH, chunks_count);
 
-        // Stream-read only this batch's texts from chunks.text file
-        let all_texts = idx.read_texts_batch(start, end);
+        // Acquire read lock ONLY for reading texts, then release immediately.
+        // The lock is held for microseconds (file seek + read), not for the
+        // expensive ONNX inference that follows.
+        let all_texts = {
+            let ix = idx_arc.read().unwrap_or_else(|e| e.into_inner());
+            ix.read_texts_batch(start, end)
+        };
 
         let batch: Vec<String> = (0..all_texts.len())
             .map(|i| {
                 let text = &all_texts[i];
-                if idx.chunks[start + i].file_id == 0 || text.trim().is_empty() {
+                if chunks_meta[start + i].file_id == 0 || text.trim().is_empty() {
                     String::from(" ")
                 } else {
                     text.clone()
@@ -186,7 +200,7 @@ pub fn embed_all_with_idx(idx: &crate::store::BigramIndex) -> Result<()> {
         let embeddings = embedder.embed_batch(&batch)?;
 
         for (i, emb) in embeddings.into_iter().enumerate() {
-            let chunk = &idx.chunks[start + i];
+            let chunk = &chunks_meta[start + i];
             if chunk.file_id == 0 {
                 // Dead chunk: write empty vector (bincode: u64(0))
                 file.write_all(&0u64.to_le_bytes())?;
@@ -203,7 +217,7 @@ pub fn embed_all_with_idx(idx: &crate::store::BigramIndex) -> Result<()> {
         done = end;
         EMBED_DONE.store(done as u64, Ordering::Relaxed);
         eprint!("
-  {done}/{} chunks", idx.chunks.len());
+  {done}/{} chunks", chunks_count);
 
         // Yield CPU between batches to avoid hogging
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -223,6 +237,7 @@ pub fn embed_all_with_idx(idx: &crate::store::BigramIndex) -> Result<()> {
 
 /// CLI 兼容：从磁盘加载索引后调用 embed_all_with_idx。
 pub fn embed_all() -> Result<()> {
-    let idx = crate::store::BigramIndex::load()?;
+    use std::sync::{Arc, RwLock};
+    let idx = Arc::new(RwLock::new(crate::store::BigramIndex::load()?));
     embed_all_with_idx(&idx)
 }
