@@ -582,15 +582,8 @@ onMounted(() => {
       startEmbedPolling()
     }
   }).catch(() => {})
-  // Check startup auto-check result
-  api.update.autoResult().then(r => {
-    if (r.checked && r.has_update) {
-      updateInfo.value = r
-      updateCurrent.value = r.current
-    } else if (r.checked && !r.has_update) {
-      updateMsg.value = '当前已是最新版本'
-    }
-  }).catch(() => {})
+  // Always do a fresh check on page load (auto-check result may be stale)
+  window.doCheckUpdate()
   // Also get version from backend
   api.info().then(r => { if (r.version) updateCurrent.value = r.version }).catch(() => {})
 })
