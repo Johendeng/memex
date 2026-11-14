@@ -121,6 +121,75 @@ impl Drop for EmbedGuard {
     }
 }
 
+// ---- incremental-embed sidecar fingerprint ----
+// vectors.bin.fp 记录写入时的 chunk 总数 + 若干抽样位置的 (file_id, char_len)。
+// 下次增量运行前抽查这些位置：全部吻合才允许按位置复用旧向量，
+// 防止 index.bin 被删重建后位置整体偏移而长度检查恰好通过。
+fn fingerprint_path(vec_path: &std::path::Path) -> std::path::PathBuf {
+    vec_path.with_extension("bin.fp")
+}
+
+/// 抽样位置：头、尾、1/4、1/2、3/4 + 前几个（新增尾部最易偏移）。
+fn fingerprint_spots(count: u64) -> Vec<usize> {
+    let mut spots = vec![0usize, 1, 2];
+    if count > 3 {
+        spots.push((count / 4) as usize);
+        spots.push((count / 2) as usize);
+        spots.push((3 * count / 4) as usize);
+        spots.push((count - 1) as usize);
+    }
+    spots.sort_unstable();
+    spots.dedup();
+    spots
+}
+
+/// 读取指纹：(写入时的 chunk 总数, 抽样 (pos, file_id, char_len) 列表)。
+fn read_vector_fingerprint() -> Option<(u64, Vec<(usize, i64, u32)>)> {
+    let vec_path = crate::vector::vector_path().ok()?;
+    let bytes = std::fs::read(fingerprint_path(&vec_path)).ok()?;
+    let mut cursor = 0usize;
+    let mut rd_u64 = |buf: &[u8]| -> Option<u64> {
+        if cursor + 8 > buf.len() {
+            return None;
+        }
+        let v = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().ok()?);
+        cursor += 8;
+        Some(v)
+    };
+    let count = rd_u64(&bytes)?;
+    let n = rd_u64(&bytes)? as usize;
+    let mut spots = Vec::with_capacity(n);
+    for _ in 0..n {
+        let pos = rd_u64(&bytes)? as usize;
+        let file_id = rd_u64(&bytes)? as i64;
+        let char_len = rd_u64(&bytes)? as u32;
+        spots.push((pos, file_id, char_len));
+    }
+    if cursor != bytes.len() {
+        return None; // trailing garbage — treat as invalid
+    }
+    Some((count, spots))
+}
+
+/// 写入指纹（embed 成功 rename 之后调用）。
+fn write_vector_fingerprint(chunks_meta: &[crate::store::ChunkRec]) {
+    let Ok(vec_path) = crate::vector::vector_path() else {
+        return;
+    };
+    let count = chunks_meta.len() as u64;
+    let mut buf = Vec::with_capacity(8 + fingerprint_spots(count).len() * 24 + 8);
+    buf.extend_from_slice(&count.to_le_bytes());
+    let spots = fingerprint_spots(count);
+    buf.extend_from_slice(&(spots.len() as u64).to_le_bytes());
+    for pos in spots {
+        let c = &chunks_meta[pos];
+        buf.extend_from_slice(&(pos as u64).to_le_bytes());
+        buf.extend_from_slice(&(c.file_id as u64).to_le_bytes());
+        buf.extend_from_slice(&(c.char_len as u64).to_le_bytes());
+    }
+    let _ = std::fs::write(fingerprint_path(&vec_path), buf);
+}
+
 /// 对所有已索引 chunk 做嵌入，流式写入 vectors.bin。
 /// 调用前提：index.bin 中已有 chunk（先跑 `memex index`）。
 /// 使用传入的共享索引引用（避免重复加载 976MB index.bin）。
@@ -130,6 +199,13 @@ impl Drop for EmbedGuard {
 /// - 增量写入临时文件，最后 rename（内存峰值 ≈ 1 batch）
 /// - ONNX 线程限制为 2，batch=16，每 batch sleep 10ms 让出 CPU
 /// - 不在搜索栏暴露按钮，由 indexer 自动后台触发
+///
+/// 增量构建（v1.2.1）：
+/// - vectors.bin 按位置与 BigramIndex.chunks 对齐，且位置稳定
+///   （add_file 只追加、remove_file 只标记死，compact 无调用方）
+/// - 位置 < 旧长度的非空向量 = 同一文本的同一向量，流式拷贝复用，不跑 ONNX
+/// - 只嵌入新增尾部（位置 ≥ 旧长度）；新变死的位置改写为空标记
+/// - 关闭软件重开、无变化时秒级完成，不再从头重算
 pub fn embed_all_with_idx(idx_arc: &std::sync::Arc<std::sync::RwLock<crate::store::BigramIndex>>) -> Result<()> {
     use crate::vector;
     use std::io::Write;
@@ -171,23 +247,161 @@ pub fn embed_all_with_idx(idx_arc: &std::sync::Arc<std::sync::RwLock<crate::stor
     // (must be set before model initialization)
     std::env::set_var("OMP_NUM_THREADS", "2");
 
-    eprintln!("loading bge-small-zh-v1.5 model (from local models/ dir)…");
-    let embedder = BgeEmbedder::new()?;
-    eprintln!("model loaded. embedding {} chunks (streaming, batch=16)…", total);
-
     // Stream vectors to a temp file, then rename → vectors.bin
     let vec_path = vector::vector_path()?;
     let tmp_path = vec_path.with_extension("bin.tmp");
     let mut file = std::fs::File::create(&tmp_path)
         .with_context(|| format!("无法创建临时向量文件: {}", tmp_path.display()))?;
 
-    // bincode format for Vec<Vec<f32>>: u64(outer_len) + for each: u64(inner_len) + data
-    // Write outer length header
-    file.write_all(&(chunks_count as u64).to_le_bytes())?;
+    // ---- 增量复用（v1.2.1）----
+    // vectors.bin 按位置与 BigramIndex.chunks 对齐，且位置稳定：
+    // add_file 只追加、remove_file 只原地标记死、compact 无调用方。
+    // 因此位置 < old_count 的存活 chunk 的旧向量仍然有效 —— 流式拷贝
+    // 复用，不跑 ONNX；只有新增尾部（位置 >= old_count）需要嵌入。
+    // chunk 已变死的位置改写为空标记（0 长度）。
+    let mut new_start: usize = 0;
+    let mut reuse_ok = false;
+    {
+        use std::io::Read;
+        if let Ok(mut old) = std::fs::File::open(&vec_path) {
+            let mut hdr = [0u8; 8];
+            let mut old_count: u64 = 0;
+            let mut readable =
+                old.read_exact(&mut hdr).is_ok() && {
+                    old_count = u64::from_le_bytes(hdr);
+                    // old file longer than current chunks = index was rebuilt
+                    // from scratch — positional reuse is unsafe, full rebuild.
+                    old_count <= chunks_count as u64
+                };
+            if readable && old_count == 0 {
+                readable = false;
+            }
+            // Sidecar fingerprint: guards against an index rebuilt from
+            // scratch (deleted index.bin) where positions shifted but the
+            // length check above coincidentally passes. Spot-check a few
+            // positions' (file_id, char_len) against the current chunks_meta.
+            let spots_ok = || -> bool {
+                if old_count == 0 {
+                    return false;
+                }
+                let Some(spots) = read_vector_fingerprint() else {
+                    return false;
+                };
+                if spots.0 != old_count {
+                    return false;
+                }
+                spots.1.iter().all(|&(pos, file_id, char_len)| {
+                    pos < old_count as usize
+                        && (file_id == 0 || {
+                            let cur = &chunks_meta[pos];
+                            // cur dead (file removed since) is fine — the
+                            // copy loop drops that vector anyway. A different
+                            // live file_id at the same position means the
+                            // index was rebuilt — positions shifted.
+                            cur.file_id == 0
+                                || (cur.file_id == file_id && cur.char_len == char_len)
+                        })
+                })
+            };
+            if readable && !spots_ok() {
+                eprintln!("vectors fingerprint mismatch — full rebuild");
+                readable = false;
+            }
+            if readable {
+                let old_count = old_count as usize;
+                // bincode format: u64(outer_len) + per vec: u64(inner_len) + data
+                file.write_all(&(chunks_count as u64).to_le_bytes())?;
+                let mut pos = 0usize;
+                let mut reused = 0usize;
+                let mut read_err = false;
+                let mut buf = vec![0u8; 64 * 1024];
+                'copy: while pos < old_count {
+                    let mut len_hdr = [0u8; 8];
+                    if old.read_exact(&mut len_hdr).is_err() {
+                        read_err = true;
+                        break 'copy;
+                    }
+                    let vlen = u64::from_le_bytes(len_hdr) as usize;
+                    let dead_now = chunks_meta[pos].file_id == 0;
+                    if vlen == 0 {
+                        // was empty (dead) — stays an empty marker
+                        file.write_all(&0u64.to_le_bytes())?;
+                    } else if dead_now {
+                        // live → dead: drop the old vector, skip its data
+                        let mut skip = vlen * 4;
+                        while skip > 0 {
+                            let n = std::cmp::min(skip, buf.len());
+                            if old.read_exact(&mut buf[..n]).is_err() {
+                                read_err = true;
+                                break 'copy;
+                            }
+                            skip -= n;
+                        }
+                        file.write_all(&0u64.to_le_bytes())?;
+                    } else {
+                        // still live with a valid old vector — copy through
+                        file.write_all(&len_hdr)?;
+                        let mut remaining = vlen * 4;
+                        while remaining > 0 {
+                            let n = std::cmp::min(remaining, buf.len());
+                            if old.read_exact(&mut buf[..n]).is_err() {
+                                read_err = true;
+                                break 'copy;
+                            }
+                            file.write_all(&buf[..n])?;
+                            remaining -= n;
+                        }
+                        reused += 1;
+                    }
+                    pos += 1;
+                    if pos % 65536 == 0 {
+                        EMBED_DONE.store(pos as u64, Ordering::Relaxed);
+                    }
+                }
+                if read_err {
+                    // Old file truncated/corrupt mid-way — full rebuild.
+                    eprintln!("old vectors.bin unreadable mid-way — full rebuild");
+                    file.set_len(0)?;
+                    use std::io::Seek;
+                    file.seek(std::io::SeekFrom::Start(0))?;
+                } else {
+                    new_start = old_count;
+                    reuse_ok = true;
+                    EMBED_DONE.store(new_start as u64, Ordering::Relaxed);
+                    eprintln!(
+                        "incremental: reused {reused} existing vectors, embedding {} new chunks",
+                        chunks_count - new_start
+                    );
+                }
+            }
+        }
+    }
+    if !reuse_ok {
+        // First run (or old file unusable): plain full-embed header.
+        file.write_all(&(chunks_count as u64).to_le_bytes())?;
+    }
+
+    if new_start >= chunks_count {
+        // Nothing new to embed — flush and rename. Instant on unchanged index.
+        file.flush()?;
+        drop(file);
+        std::fs::rename(&tmp_path, &vec_path)
+            .with_context(|| format!("rename {:?} → {:?}", tmp_path, vec_path))?;
+        write_vector_fingerprint(&chunks_meta);
+        eprintln!("incremental: all {chunks_count} chunk vectors up to date");
+        return Ok(());
+    }
+
+    eprintln!("loading bge-small-zh-v1.5 model (from local models/ dir)…");
+    let embedder = BgeEmbedder::new()?;
+    eprintln!(
+        "model loaded. embedding {} new chunks (positions {new_start}..{chunks_count}, batch=16)…",
+        chunks_count - new_start
+    );
 
     const BATCH: usize = 16;
     let mut done = 0usize;
-    for start in (0..chunks_count).step_by(BATCH) {
+    for start in (new_start..chunks_count).step_by(BATCH) {
         let end = std::cmp::min(start + BATCH, chunks_count);
 
         // Acquire read lock ONLY for reading texts, then release immediately.
@@ -242,6 +456,8 @@ pub fn embed_all_with_idx(idx_arc: &std::sync::Arc<std::sync::RwLock<crate::stor
     // Atomic rename → vectors.bin
     std::fs::rename(&tmp_path, &vec_path)
         .with_context(|| format!("rename {:?} → {:?}", tmp_path, vec_path))?;
+
+    write_vector_fingerprint(&chunks_meta);
 
     eprintln!("embedded {} chunks → vectors.bin (streaming write)", done);
     Ok(())
