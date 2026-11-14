@@ -418,6 +418,15 @@ pub fn run_mode_selector() -> Result<()> {
 
             // Redirect child stdout/stderr to memex.log so errors are
             // captured even without a console window.
+            //
+            // stdin MUST be an explicit null handle, never inherited: this
+            // process called FreeConsole() at startup (detach_from_console),
+            // which invalidated our own standard handles. Inheriting them
+            // makes CreateProcessW fail the whole spawn with
+            // ERROR_NOT_SUPPORTED (os error 50) — deterministic, so retrying
+            // never helps. stdout/stderr are replaced below; stdin was the
+            // one leaked handle.
+            cmd.stdin(std::process::Stdio::null());
             let log_path = crate::applog::log_path();
             if let Ok(log_file) = std::fs::OpenOptions::new()
                 .create(true)
@@ -681,8 +690,14 @@ const MODE_SELECTOR_HTML: &str = r#"<!DOCTYPE html>
 fn open_browser(url: &str) {
     #[cfg(windows)]
     {
+        // Stdio::null() for all three: this process may run detached from any
+        // console (FreeConsole at startup), in which case inherited standard
+        // handles are invalid and the spawn fails with os error 50.
         let _ = std::process::Command::new("cmd")
             .args(["/C", "start", "", url])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn();
     }
     #[cfg(not(windows))]
