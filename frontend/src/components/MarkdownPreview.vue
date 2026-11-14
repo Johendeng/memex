@@ -60,7 +60,21 @@
         <div v-if="loading" class="md-loading">加载中…</div>
         <div v-else class="md-body-row">
           <!-- view mode -->
-          <div v-if="mode === 'view'" class="md-body markdown-body" v-html="rendered"></div>
+          <template v-if="mode === 'view'">
+            <!-- TOC sidebar (markdown with headings only) -->
+            <div v-if="toc.length" v-show="tocOpen" class="md-toc">
+              <div class="toc-head">
+                <span>目录</span>
+                <button class="toc-collapse" @click="tocOpen = false" title="收起目录">«</button>
+              </div>
+              <div class="toc-list">
+                <div v-for="t in toc" :key="t.idx" class="toc-item" :class="'toc-h' + t.level"
+                  @click="tocScroll(t)">{{ t.title }}</div>
+              </div>
+            </div>
+            <button v-else-if="!tocOpen" class="toc-expand" @click="tocOpen = true" title="展开目录">»</button>
+            <div ref="bodyRef" class="md-body markdown-body" v-html="rendered"></div>
+          </template>
           <!-- edit mode -->
           <template v-else>
             <textarea
@@ -77,6 +91,7 @@
               @keydown.ctrl.1.prevent="mdHeading(1)"
               @keydown.ctrl.2.prevent="mdHeading(2)"
               @keydown.ctrl.3.prevent="mdHeading(3)"
+              @paste="onPaste"
             ></textarea>
             <div v-if="livePreview" class="md-split-preview markdown-body" v-html="editRendered"></div>
           </template>
@@ -110,6 +125,8 @@ import { api } from '../api.js'
 const props = defineProps({
   path: { type: String, default: '' },
   file_id: { type: Number, default: 0 },
+  // Optional search query: after loading, scroll to & flash the first match.
+  query: { type: String, default: '' },
 })
 const emit = defineEmits(['close', 'preview'])
 
@@ -165,6 +182,9 @@ watch(() => props.path, async (p) => {
     if (r.ok) {
       content.value = r.content || ''
       ext.value = r.ext || ''
+      toc.value = isMarkdown.value ? extractToc(content.value) : []
+      tagHeadings()
+      scrollToHit()
     } else {
       content.value = ''
       ext.value = r.ext || ''
@@ -294,6 +314,105 @@ function mdInsertText(text) {
   nextTick(() => { ta.focus(); ta.setSelectionRange(s + text.length, s + text.length) })
 }
 
+// ---------------- paste image ----------------
+
+/// Paste an image into the editor: upload via cmd_save_image, insert a
+/// relative `![](assets/…)` link at the caret. Text pastes pass through.
+async function onPaste(e) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const it of items) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      e.preventDefault()
+      const file = it.getAsFile()
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = async () => {
+        try {
+          const r = await api.saveImage(props.path, reader.result, it.type)
+          if (r.ok && r.rel_path) mdInsertText(`![图片](${r.rel_path})`)
+          else { msg.value = r.error || '图片保存失败'; msgType.value = 'err' }
+        } catch (err) {
+          msg.value = '图片保存失败: ' + err.message
+          msgType.value = 'err'
+        }
+      }
+      reader.readAsDataURL(file)
+      return
+    }
+  }
+}
+
+// ---------------- TOC (table of contents) ----------------
+
+const toc = ref([])
+const tocOpen = ref(true)
+const bodyRef = ref(null)
+
+/// Extract H1-H3 headings from the raw markdown (view mode outline).
+function extractToc(text) {
+  const out = []
+  const lines = (text || '').split('\n')
+  let inCode = false
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    if (/^\s*(```|~~~)/.test(l)) inCode = !inCode
+    if (inCode) continue
+    const m = /^(#{1,3})\s+(.*)$/.exec(l)
+    if (m) {
+      const title = m[2].replace(/[#\s]+$/, '').trim()
+      if (title) out.push({ level: m[1].length, title, idx: out.length })
+    }
+  }
+  return out
+}
+
+/// After render, tag each heading in the rendered DOM with an id so TOC
+/// clicks can scroll to it. Only run for markdown; non-md has no headings.
+function tagHeadings() {
+  nextTick(() => {
+    const root = bodyRef.value
+    if (!root) return
+    const hs = root.querySelectorAll('h1, h2, h3')
+    hs.forEach((h, i) => { h.id = 'md-toc-' + i })
+  })
+}
+
+function tocScroll(item) {
+  const root = bodyRef.value
+  if (!root) return
+  const hs = root.querySelectorAll('h1, h2, h3')
+  const el = hs[item.idx]
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    el.classList.add('toc-flash')
+    setTimeout(() => el.classList.remove('toc-flash'), 1200)
+  }
+}
+
+// ---------------- search hit locate ----------------
+
+/// Scroll to & flash the first occurrence of props.query in the rendered
+/// document (view mode). Falls back silently when there is no query.
+function scrollToHit() {
+  if (!props.query) return
+  nextTick(() => {
+    const root = bodyRef.value
+    if (!root) return
+    const query = props.query.toLowerCase()
+    // Headings first, then paragraphs/list items.
+    const nodes = [...root.querySelectorAll('h1,h2,h3,h4,p,li,td,pre')]
+    for (const el of nodes) {
+      if ((el.textContent || '').toLowerCase().includes(query)) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('toc-flash')
+        setTimeout(() => el.classList.remove('toc-flash'), 1600)
+        return
+      }
+    }
+  })
+}
+
 // ---------------- view/edit switch & actions ----------------
 
 function startEdit() {
@@ -315,6 +434,8 @@ async function save() {
   try {
     await api.saveFile(props.path, editContent.value)
     content.value = editContent.value
+    toc.value = isMarkdown.value ? extractToc(content.value) : []
+    tagHeadings()
     mode.value = 'view'
     msg.value = '已保存'
     msgType.value = 'ok'
@@ -477,6 +598,70 @@ async function findSimilar() {
   flex: 1;
   display: flex;
   min-height: 0;
+}
+/* TOC sidebar */
+.md-toc {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 10px 8px;
+}
+.toc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 2px 6px 8px;
+}
+.toc-collapse {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.toc-collapse:hover { color: var(--fg); background: var(--bg-card); }
+.toc-list { display: flex; flex-direction: column; gap: 1px; }
+.toc-item {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toc-item:hover { color: var(--fg); background: var(--bg-card); }
+.toc-h1 { font-weight: 700; color: var(--fg); }
+.toc-h2 { padding-left: 18px; }
+.toc-h3 { padding-left: 30px; font-size: 11px; }
+.toc-expand {
+  width: 20px;
+  flex-shrink: 0;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.toc-expand:hover { color: var(--fg); background: var(--bg-elev); }
+/* flash highlight when scrolling to TOC/search hit */
+.toc-flash {
+  animation: toc-flash-anim 1.4s ease-out;
+  border-radius: 4px;
+}
+@keyframes toc-flash-anim {
+  0% { background: rgba(96,165,250,.35); box-shadow: 0 0 0 4px rgba(96,165,250,.18); }
+  100% { background: transparent; box-shadow: 0 0 0 0 transparent; }
 }
 .md-body {
   flex: 1;

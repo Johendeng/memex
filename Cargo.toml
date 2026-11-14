@@ -17,6 +17,7 @@ path = "src/main.rs"
 # SQLite + Tantivy remain the M3 target per docs/tech-design.md.
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 bincode = "1"
 dirs = "5"
 globset = "0.4"

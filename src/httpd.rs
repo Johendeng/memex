@@ -1143,6 +1143,49 @@ MCP endpoint: `POST {http_url}`
             std::fs::write(path, content)?;
             serde_json::json!({ "ok": true })
         }
+        // ---- Save a pasted image next to a doc (editor paste-image) ----
+        // Writes `assets/<filename>` under the doc's directory and returns
+        // the relative path for the inserted markdown `![](...)` link.
+        "cmd_save_image" => {
+            let doc_path = args.get("doc_path").and_then(|v| v.as_str()).unwrap_or("");
+            let data_b64 = args.get("data_b64").and_then(|v| v.as_str()).unwrap_or("");
+            let ext = match args.get("ext").and_then(|v| v.as_str()).unwrap_or("png") {
+                "png" => "png",
+                "jpg" | "jpeg" => "jpg",
+                "gif" => "gif",
+                "webp" => "webp",
+                "svg" => "svg",
+                _ => "png",
+            };
+            if doc_path.is_empty() || data_b64.is_empty() {
+                return Err(anyhow::anyhow!("missing doc_path or data_b64"));
+            }
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data_b64)
+                .map_err(|e| anyhow::anyhow!("base64 decode: {e}"))?;
+            if bytes.is_empty() {
+                return Err(anyhow::anyhow!("empty image data"));
+            }
+            let doc = std::path::Path::new(doc_path);
+            let dir = doc.parent().ok_or_else(|| anyhow::anyhow!("doc has no parent dir"))?;
+            let assets = dir.join("assets");
+            std::fs::create_dir_all(&assets)?;
+            // Unique, filesystem-safe name — time + counter, no user input.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            // Counter fallback if two pastes land in the same millisecond.
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static PASTE_SEQ: AtomicU32 = AtomicU32::new(0);
+            let seq = PASTE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let filename = format!("img-{now}-{seq}.{ext}");
+            let file_path = assets.join(&filename);
+            std::fs::write(&file_path, &bytes)?;
+            let rel = format!("assets/{filename}");
+            serde_json::json!({ "ok": true, "rel_path": rel, "size": bytes.len() })
+        }
         // ---- Find Similar: vector similarity search by file_id ----
         "cmd_find_similar" => {
             let file_id = args.get("file_id").and_then(|v| v.as_i64()).unwrap_or(0);

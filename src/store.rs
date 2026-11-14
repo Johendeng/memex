@@ -30,6 +30,33 @@ fn index_path() -> Result<PathBuf> {
     Ok(index_dir()?.join("index.bin"))
 }
 
+/// Rotate `<name>.bak` before overwriting a persisted file, so a later
+/// truncated/corrupted write can self-heal from the previous generation.
+/// At most once per file per process: these files can be hundreds of MB and
+/// watcher saves fire often — the process-start copy is the "last known
+/// good" generation, later in-process saves add nothing but disk wear.
+/// Best-effort: failures (first run, missing file) are silently ignored.
+pub fn rotate_backup(p: &std::path::Path) {
+    use std::sync::Mutex;
+    static ROTATED: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+    let mut guard = match ROTATED.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let set = guard.get_or_insert_with(std::collections::HashSet::new);
+    if !set.insert(p.to_path_buf()) {
+        return; // already rotated this file in this process
+    }
+    if !p.exists() {
+        return;
+    }
+    let bak = p.with_extension(format!(
+        "{}.bak",
+        p.extension().and_then(|e| e.to_str()).unwrap_or("")
+    ));
+    let _ = std::fs::copy(p, &bak);
+}
+
 /// Path to the external chunk text file.
 fn chunks_text_path() -> Result<PathBuf> {
     Ok(index_dir()?.join("chunks.text"))
@@ -152,8 +179,23 @@ impl Meta {
     pub fn load() -> Result<Self> {
         let p = meta_path()?;
         if p.exists() {
-            let s = std::fs::read_to_string(&p)?;
-            Ok(serde_json::from_str(&s)?)
+            let parsed: anyhow::Result<Self> = std::fs::read_to_string(&p)
+                .map_err(Into::into)
+                .and_then(|s| serde_json::from_str(&s).map_err(Into::into));
+            match parsed {
+                Ok(m) => Ok(m),
+                Err(e) => {
+                    // Self-heal: fall back to the previous generation.
+                    let bak = p.with_extension("json.bak");
+                    if bak.exists() {
+                        eprintln!("meta.json corrupted ({e:#}); restoring from meta.json.bak");
+                        let s = std::fs::read_to_string(&bak)?;
+                        Ok(serde_json::from_str(&s)?)
+                    } else {
+                        Err(e.context("meta.json corrupted and no backup available"))
+                    }
+                }
+            }
         } else {
             Ok(Meta {
                 folders: Vec::new(),
@@ -171,6 +213,8 @@ impl Meta {
     pub fn save(&self) -> Result<()> {
         let p = meta_path()?;
         let s = serde_json::to_string_pretty(self)?;
+        // Rotate a backup so a corrupted meta.json can self-heal on load.
+        rotate_backup(&p);
         let tmp = p.with_extension("tmp");
         std::fs::write(&tmp, s)?;
         std::fs::rename(&tmp, &p)?;
@@ -295,9 +339,12 @@ impl BigramIndex {
         if !p.exists() {
             return Ok(BigramIndex::default());
         }
-        let bytes = std::fs::read(&p)?;
+        let bytes = match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(e) => return Self::load_bak_fallback(&p, e.into()),
+        };
         if bytes.is_empty() {
-            return Ok(BigramIndex::default());
+            return Self::load_bak_fallback(&p, anyhow::anyhow!("index.bin is empty (truncated write)"));
         }
 
         if bytes[0] == Self::VERSION_V3 {
@@ -362,8 +409,40 @@ impl BigramIndex {
         }
     }
 
+    /// Try to load from the `.bak` sibling (rotate_backup writes it).
+    /// Called when the primary file is unreadable/empty.
+    fn load_bak_fallback(p: &std::path::Path, cause: anyhow::Error) -> Result<Self> {
+        let bak = p.with_extension("bin.bak");
+        if bak.exists() {
+            let bak_bytes = std::fs::read(&bak)?;
+            if !bak_bytes.is_empty() && bak_bytes[0] == Self::VERSION_V3 {
+                eprintln!(
+                    "index.bin unusable ({cause:#}); loading index.bin.bak ({} bytes)",
+                    bak_bytes.len()
+                );
+                let mut idx: BigramIndex = bincode::deserialize(&bak_bytes[1..])
+                    .context("index.bin.bak deserialization failed")?;
+                idx.rebuild_file_chunks_map();
+                if idx.text_offsets.len() != idx.chunks.len() + 1 {
+                    let ct_path = chunks_text_path()?;
+                    let file_size = std::fs::metadata(&ct_path).map(|m| m.len()).unwrap_or(0);
+                    idx.text_offsets.clear();
+                    idx.text_offsets.resize(idx.chunks.len() + 1, 0);
+                    idx.text_offsets[idx.chunks.len()] = file_size;
+                }
+                idx.load_postings_disk()?;
+                idx.load_delta();
+                return Ok(idx);
+            }
+        }
+        // No usable backup: bubble the original error up.
+        Err(cause.context("index.bin unusable and no valid backup"))
+    }
+
     pub fn save(&self) -> Result<()> {
         let p = index_path()?;
+        // Rotate a backup so a corrupted index.bin can self-heal on load.
+        rotate_backup(&p);
         // Serialize only chunks + text_offsets (postings are #[serde(skip)])
         let mut bytes = vec![Self::VERSION_V3];
         bytes.extend_from_slice(&bincode::serialize(self)?);

@@ -49,6 +49,11 @@ export const api = {
   search: (query, limit = 20, hybrid = false, tagFilter = {}, filters = {}) => call('cmd_search', { query, limit, hybrid, ...tagFilter, ...filters }),
   readFile: (path) => call('cmd_read_file', { path }),
   saveFile: (path, content) => call('cmd_save_file', { path, content }),
+  saveImage: (docPath, dataUrl, mime) => call('cmd_save_image', {
+    doc_path: docPath,
+    data_b64: String(dataUrl).split(',')[1] || '',
+    ext: (mime || 'image/png').split('/')[1] || 'png',
+  }),
   findSimilar: (fileId, limit = 10) => call('cmd_find_similar', { file_id: fileId, limit }),
   openFile: (path) => call('cmd_open_file', { path }),
   openFolder: (path) => call('cmd_open_folder', { path }),

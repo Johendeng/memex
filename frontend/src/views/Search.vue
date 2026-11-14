@@ -104,6 +104,7 @@
     <MarkdownPreview
       :path="previewPath"
       :file_id="previewFileId"
+      :query="similarMode ? '' : q.trim()"
       @close="closePreview"
       @preview="onPreviewFromSimilar"
     />
