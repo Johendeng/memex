@@ -143,6 +143,34 @@ fn handle_tools_list() -> Value {
             }
         },
         {
+            "name": "memex_untag",
+            "description": "🗑️ 删除文件的标签。可删单个值（file+dim+value），也可按维度清空（file+dim），或删该文件全部标签（file）。删除前若需查看现有标签，先用 memex_stats 或 memex_search。删除不可撤销。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "description": "文件 ID（数字）或路径片段"},
+                    "dim": {"type": "string", "description": "维度名；省略则删该文件全部标签"},
+                    "value": {"type": "string", "description": "标签值；省略则删该维度全部值"}
+                },
+                "required": ["file"]
+            }
+        },
+        {
+            "name": "memex_edit_tag",
+            "description": "✏️ 批量修改标签值（重命名/同义词合并/纠正）。将匹配的标签值从 old_value 改为 new_value。可按维度限定；省略 file 时全库批量（如同义词合并：电力监控→智能电力）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "description": "文件 ID（数字）或路径片段；省略则全库批量修改"},
+                    "dim": {"type": "string", "description": "维度名；省略则不限维度"},
+                    "old_value": {"type": "string", "description": "旧标签值（必填）"},
+                    "new_value": {"type": "string", "description": "新标签值（必填）"},
+                    "note": {"type": "string", "description": "可选备注"}
+                },
+                "required": ["old_value", "new_value"]
+            }
+        },
+        {
             "name": "memex_report_confidence",
             "description": "报告 Agent 对某文件解析结果的置信度分数。score≥0.85 则标记为 verified（后续 memex_read 直接返回缓存文本）；否则标记为 below。源文件变更后 verified 自动降级为 reverify。",
             "inputSchema": {
@@ -278,6 +306,8 @@ fn handle_tools_call(params: Value, idx: Option<&BigramIndex>) -> Value {
         "memex_search" => tool_search(&args, idx),
         "memex_read" => tool_read(&args, idx),
         "memex_tag" => tool_tag(&args),
+        "memex_untag" => tool_untag(&args),
+        "memex_edit_tag" => tool_edit_tag(&args),
         "memex_report_confidence" => tool_confidence(&args),
         "memex_write_note" => tool_write_note(&args),
         "memex_list_notes" => tool_list_notes(&args),
@@ -462,6 +492,17 @@ fn tool_tag(args: &Value) -> Result<String, String> {
     };
 
     let at = now();
+    // 已存在完全相同的标签则不重复追加
+    if meta.tags.iter().any(|t| t.file_id == file_id && t.dim == dim && t.value == value) {
+        return Ok(serde_json::to_string_pretty(&json!({
+            "ok": true,
+            "file_id": file_id,
+            "dim": dim,
+            "value": value,
+            "already_tagged": true,
+            "conflict": conflict
+        })).unwrap());
+    }
     meta.tags.push(TagRec {
         file_id,
         dim: dim.to_string(),
@@ -480,6 +521,104 @@ fn tool_tag(args: &Value) -> Result<String, String> {
         "value": value,
         "at": at,
         "conflict": conflict
+    })).unwrap())
+}
+
+/// memex_untag: 删除文件标签。
+/// file+dim+value → 删单值；file+dim → 清空该维度；file → 删全部。
+fn tool_untag(args: &Value) -> Result<String, String> {
+    let file = args.get("file")
+        .and_then(|f| f.as_str())
+        .ok_or("missing 'file'")?;
+    let dim = args.get("dim").and_then(|d| d.as_str());
+    let value = args.get("value").and_then(|v| v.as_str());
+
+    let mut meta = store::Meta::load().map_err(|e| format!("load meta: {e}"))?;
+    let file_rec = store::find_file(&meta, file)
+        .ok_or_else(|| format!("file not found: {file}"))?;
+    let file_id = file_rec.id;
+
+    let before = meta.tags.len();
+    let removed: Vec<String> = meta.tags.iter()
+        .filter(|t| t.file_id == file_id)
+        .filter(|t| dim.map_or(true, |d| t.dim == d))
+        .filter(|t| value.map_or(true, |v| t.value == v))
+        .map(|t| format!("{}={}", t.dim, t.value))
+        .collect();
+    if removed.is_empty() {
+        return Ok(serde_json::to_string_pretty(&json!({
+            "ok": true, "file_id": file_id, "removed": 0,
+            "hint": "无匹配标签可删"
+        })).unwrap());
+    }
+    meta.tags.retain(|t| !(t.file_id == file_id
+        && dim.map_or(true, |d| t.dim == d)
+        && value.map_or(true, |v| t.value == v)));
+    meta.save().map_err(|e| format!("save meta: {e}"))?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "ok": true,
+        "file_id": file_id,
+        "removed": before - meta.tags.len(),
+        "tags": removed
+    })).unwrap())
+}
+
+/// memex_edit_tag: 批量修改标签值（重命名/同义合并/纠正）。
+/// file 可选（省略=全库）；dim 可选（省略=不限维度）。
+fn tool_edit_tag(args: &Value) -> Result<String, String> {
+    let old_value = args.get("old_value")
+        .and_then(|v| v.as_str())
+        .ok_or("missing 'old_value'")?;
+    let new_value = args.get("new_value")
+        .and_then(|v| v.as_str())
+        .ok_or("missing 'new_value'")?;
+    let dim = args.get("dim").and_then(|d| d.as_str());
+    let file = args.get("file").and_then(|f| f.as_str());
+    let note = args.get("note").and_then(|n| n.as_str());
+
+    let mut meta = store::Meta::load().map_err(|e| format!("load meta: {e}"))?;
+    let file_id = if let Some(f) = file {
+        let file_rec = store::find_file(&meta, f)
+            .ok_or_else(|| format!("file not found: {f}"))?;
+        Some(file_rec.id)
+    } else {
+        None
+    };
+
+    let at = now();
+    let mut changed = 0usize;
+    let mut merged = 0usize;
+    // 先改值
+    for t in meta.tags.iter_mut() {
+        if t.value == old_value
+            && dim.map_or(true, |d| t.dim == d)
+            && file_id.map_or(true, |id| t.file_id == id)
+        {
+            t.value = new_value.to_string();
+            if let Some(n) = note { t.note = Some(n.to_string()); }
+            t.at = at.clone();
+            changed += 1;
+        }
+    }
+    if changed == 0 {
+        return Ok(serde_json::to_string_pretty(&json!({
+            "ok": true, "changed": 0, "hint": format!("未找到标签值 {old_value}")
+        })).unwrap());
+    }
+    // 再去重（改值后可能与既有标签完全相同）
+    let mut seen = std::collections::HashSet::new();
+    let before = meta.tags.len();
+    meta.tags.retain(|t| seen.insert((t.file_id, t.dim.clone(), t.value.clone())));
+    merged = before - meta.tags.len();
+    meta.save().map_err(|e| format!("save meta: {e}"))?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "ok": true,
+        "changed": changed,
+        "merged_duplicates": merged,
+        "old_value": old_value,
+        "new_value": new_value
     })).unwrap())
 }
 

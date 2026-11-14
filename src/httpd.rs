@@ -757,7 +757,7 @@ fn dispatch(
 name: memex
 command: {exe}
 args: ["mcp", "serve"]
-description: Memex 本地知识库与 AI 记忆体 — 全文检索、记忆存储、笔记管理、文件打标。13 个工具：memex_search / memex_read / memex_tag / memex_report_confidence / memex_find_similar / memex_remember / memex_recall / memex_forget / memex_write_note / memex_list_notes / memex_read_note / memex_delete_note / memex_stats。
+description: Memex 本地知识库与 AI 记忆体 — 全文检索、记忆存储、笔记管理、文件打标。15 个工具：memex_search / memex_read / memex_tag / memex_untag / memex_edit_tag / memex_report_confidence / memex_find_similar / memex_remember / memex_recall / memex_forget / memex_write_note / memex_list_notes / memex_read_note / memex_delete_note / memex_stats。
 "#
             );
             serde_json::json!({ "prompt": prompt })
@@ -788,7 +788,7 @@ r#"# Memex — 本地知识库与 AI 记忆体
 
 ## 简介
 
-Memex 是一个本地运行的知识库系统，为 AI Agent 提供持久化记忆和文档检索能力。它自动索引你电脑上的文档（PDF/Word/PPT/Markdown/图片 OCR 等），提供 BM25 + 语义向量混合检索，并通过 MCP 协议向 Agent 暴露 13 个工具，实现记忆存储、笔记管理、文档检索等能力。
+Memex 是一个本地运行的知识库系统，为 AI Agent 提供持久化记忆和文档检索能力。它自动索引你电脑上的文档（PDF/Word/PPT/Markdown/图片 OCR 等），提供 BM25 + 语义向量混合检索，并通过 MCP 协议向 Agent 暴露 15 个工具，实现记忆存储、笔记管理、文档检索等能力。
 
 Memex 的设计理念：Agent 是用户的"记忆扩展器"——主动判断什么值得记住，什么时候该回忆，用户零操作。
 
@@ -896,6 +896,8 @@ MCP endpoint: `POST {http_url}`
 | 工具 | 说明 |
 |------|------|
 | `memex_tag` | 为文件打标签（维度+值），用于多维分类 |
+| `memex_untag` | 删除文件标签（单值/按维度/全部） |
+| `memex_edit_tag` | 批量修改标签值（重命名/同义合并/纠正） |
 | `memex_report_confidence` | 报告文件解析置信度（0-1），≥0.85 标记 verified |
 | `memex_stats` | 知识库统计概览（文件数、chunk 数、标签分布等） |
 
@@ -1334,6 +1336,54 @@ MCP endpoint: `POST {http_url}`
             }
             serde_json::json!({ "ok": true, "csv": csv, "rows": m.files.len() })
         }
+        // ---- Delete tags (agent-editable) ----
+        "cmd_untag" => {
+            let file = args.get("file").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing file"))?;
+            let dim = args.get("dim").and_then(|v| v.as_str());
+            let value = args.get("value").and_then(|v| v.as_str());
+            let mut m = meta.lock().unwrap();
+            let file_rec = store::find_file(&m, file)
+                .ok_or_else(|| anyhow::anyhow!("file not found: {file}"))?;
+            let file_id = file_rec.id;
+            let before = m.tags.len();
+            m.tags.retain(|t| !(t.file_id == file_id
+                && dim.map_or(true, |d| t.dim == d)
+                && value.map_or(true, |v| t.value == v)));
+            let removed = before - m.tags.len();
+            if removed > 0 { m.save()?; }
+            serde_json::json!({ "ok": true, "file_id": file_id, "removed": removed, "total_tags": m.tags.len() })
+        }
+        // ---- Batch rename/merge tag values (agent-editable) ----
+        "cmd_edit_tag" => {
+            let old_value = args.get("old_value").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing old_value"))?;
+            let new_value = args.get("new_value").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing new_value"))?;
+            let dim = args.get("dim").and_then(|v| v.as_str());
+            let note = args.get("note").and_then(|v| v.as_str());
+            let mut m = meta.lock().unwrap();
+            let at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_default();
+            let mut changed = 0usize;
+            for t in m.tags.iter_mut() {
+                if t.value == old_value && dim.map_or(true, |d| t.dim == d) {
+                    t.value = new_value.to_string();
+                    if let Some(n) = note { t.note = Some(n.to_string()); }
+                    t.at = at.clone();
+                    changed += 1;
+                }
+            }
+            // 去重（合并可能产生完全相同的重复行）
+            let mut seen = std::collections::HashSet::new();
+            let before = m.tags.len();
+            m.tags.retain(|t| seen.insert((t.file_id, t.dim.clone(), t.value.clone())));
+            let merged = before - m.tags.len();
+            if changed > 0 || merged > 0 { m.save()?; }
+            serde_json::json!({ "ok": true, "changed": changed, "merged_duplicates": merged, "total_tags": m.tags.len() })
+        }
         // ---- Import tags from JSON ----
         "cmd_import_tags" => {
             let tags_json = args.get("tags").cloned().unwrap_or(serde_json::json!([]));
@@ -1341,15 +1391,20 @@ MCP endpoint: `POST {http_url}`
                 .map_err(|e| anyhow::anyhow!("invalid tags JSON: {e}"))?;
             let mut m = meta.lock().unwrap();
             let before = m.tags.len();
+            let mut skipped_dup = 0usize;
             for t in tags {
-                // Only add if file_id exists
+                // Only add if file_id exists AND not a duplicate (id, dim, value)
                 if m.files.iter().any(|f| f.id == t.file_id) {
-                    m.tags.push(t);
+                    if m.tags.iter().any(|x| x.file_id == t.file_id && x.dim == t.dim && x.value == t.value) {
+                        skipped_dup += 1;
+                    } else {
+                        m.tags.push(t);
+                    }
                 }
             }
             let added = m.tags.len() - before;
             m.save()?;
-            serde_json::json!({ "ok": true, "added": added, "total_tags": m.tags.len() })
+            serde_json::json!({ "ok": true, "added": added, "skipped_duplicates": skipped_dup, "total_tags": m.tags.len() })
         }
         // ---- Export memories (KV store) ----
         "cmd_export_memories" => {
