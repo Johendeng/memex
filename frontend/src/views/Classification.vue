@@ -7,7 +7,7 @@
       <div class="row between gen-header" id="cls-gen-header" @click="expanded = !expanded" :title="expanded ? '点击收起' : '点击展开'">
         <div class="row" style="gap:8px">
           <span class="card-title" style="margin:0">分类 Prompt 生成器</span>
-          <span class="muted" style="font-size:12px">为知识库文件生成分类归档提示词，粘贴给 Agent 自动执行</span>
+          <span class="muted" style="font-size:12px">生成访谈式分类提示词，Agent 会先抽样侦察、提问确认、试点打标，经你确认后才全量执行</span>
         </div>
         <span class="chev" :class="{rot: expanded}">▸</span>
       </div>
@@ -16,7 +16,7 @@
       <template v-if="expanded">
         <!-- Dimensions editor (optional, user-specified) -->
         <div class="dim-block auto-hint" id="cls-dim-hint">
-          <span>下方可指定维度和标签（留空则由 Agent 自主判断）。生成提示词后会同时说明两种方式，由 Agent 或用户选择。</span>
+          <span>下方可指定维度和标签（留空则由 Agent 访谈中提出候选方案）。已指定的维度作为先验，Agent 围绕它细化而不会从零提问。</span>
         </div>
         <div v-for="(dim, i) in genDims" :key="i" class="dim-block">
             <div class="row" style="gap:8px">
@@ -155,9 +155,9 @@ const fileListRef = ref(null)
 
 // ── Help tour steps (shared HelpTour component uses CSS selectors) ──
 const tourSteps = [
-  { selector: '#cls-gen-header', title: '分类 Prompt 生成器', text: '生成分类提示词，复制后粘贴到智能体对话。Agent 会自动搜索文件、读取内容、逐文件打标，全程无需手动操作。点击标题栏可展开/收起。' },
-  { selector: '#cls-dim-hint', title: '维度设置', text: '可选填写维度名称和标签（如：文档类型→方案/报告）。留空则 Agent 自主判断。生成提示词后会同时说明两种方式（自主 vs 按指定），由 Agent 或用户选择。' },
-  { selector: '#cls-gen-actions', title: '生成与复制', text: '点击「生成提示词」→「复制」，粘贴到智能体。Agent 通过 MCP 工具 memex_search/read/tag/report_confidence 完成搜索→读取→打标→置信度上报全流程。' },
+  { selector: '#cls-gen-header', title: '分类 Prompt 生成器', text: '生成访谈式分类提示词，复制后粘贴到智能体对话。Agent 会先抽样侦察、提出候选方案并向你提问、试点打标 20-30 个，经你确认后才全量执行。点击标题栏可展开/收起。' },
+  { selector: '#cls-dim-hint', title: '维度设置（可选先验）', text: '可选填写维度名称和标签（如：文档类型→方案/报告）。已填的维度作为先验，Agent 访谈时围绕它细化而不会从零提问；留空则 Agent 提出多套候选方案供你选。' },
+  { selector: '#cls-gen-actions', title: '生成与复制', text: '点击「生成提示词」→「复制」，粘贴到智能体。Agent 通过 MCP 工具 memex_search/read/tag/report_confidence 完成侦察→访谈→试点→全量四阶段流程。' },
   { selector: '#cls-tag-browser', title: '分类结果浏览', text: 'Agent 完成打标后，这里按维度 → 标签 → 文件三级浏览。点击维度标签页 → 选择标签 → 查看关联文件，双击文件可直接打开。' },
 ]
 
@@ -255,49 +255,57 @@ function generatePrompt() {
   const sections = genDims.value
     .filter(d => d.name.trim())
     .map((d, i) => {
-      const tagList = d.tags.length ? d.tags.join('、') : '（未指定，Agent 自行判断）'
+      const tagList = d.tags.length ? d.tags.join('、') : '（未指定，Agent 补充建议）'
       return `### ${i + 1}. ${d.name.trim()}\n标签：${tagList}`
     })
     .join('\n\n')
 
   const hasDims = !!sections
   const dimSection = hasDims
-    ? `\n## 用户指定的维度（方法 B）\n\n${sections}\n`
+    ? `\n## 用户已指定的维度（先验，访谈时围绕它细化，不必再从零提问）\n\n${sections}\n`
     : ''
 
   prompt.value = `请帮我对 Memex 知识库中的文件进行分类归档打标。
 
-## 两种方式
+**这不是一次性执行的指令，而是一个访谈式流程。分类方案必须经过我的确认才能全量执行。**${dimSection}
+## 阶段 0 — 抽样侦察（先做）
 
-**方式 A — Agent 自主分类**：由你分析文件内容，自行确定 2-5 个分类维度和标签，然后逐文件打标。优点：覆盖全面、不受预设限制；适合尚不清楚如何分类的场景。
+1. 用 memex_search 搜索若干主题关键词，用 memex_stats 了解知识库概况
+2. 抽样阅读 15-30 个文件（覆盖不同扩展名、不同文件夹），形成内容地图
+3. 后续所有提问必须引用你真实读过的文件，不许凭空泛泛而问
 
-**方式 B — 按用户指定维度分类**：用户已给出维度和部分标签，你按此框架归类，可在维度下新增标签或新增维度。优点：结果可控、符合用户预期；适合已有分类体系的场景。${dimSection}
+## 阶段 1 — 候选方案 + 结构化提问
 
-## 请选择方式
+提出 2-3 套候选分类体系，每套包含：维度名、标签、适用场景、来自抽样文件的真实例证。
+然后按优先级向我提问（一次最多 5 个，标注哪些可跳过）：
 
-- 如果用户已指定维度（上方有「用户指定的维度」段落），默认使用方式 B
-- 如果用户未指定维度，使用方式 A
-- 如果拿不准，简要说明两种方式的区别，让用户选择
-- 也可以混合：先用方式 A 扫描，再根据发现调整维度后用方式 B 精分
+1. **用途**（必问）：这套分类主要拿来做什么——搜索过滤 / 归档导航 / 汇报统计？用途决定维度设计
+2. **边界**（必问）：拿抽样中 2-3 个你拿不准的模糊文件问我"这个你会归哪类？"，用真实文件问，不用抽象描述
+3. **粒度**（可跳过）：粗几大类还是细多级？
+4. **多值**（可跳过）：一个文件在同一维度下允许打多个标签吗？
 
-## 操作步骤
+我答一部分就推进一部分，不必等全部答完。
 
-1. 用 memex_search 搜索不同主题关键词，扫描知识库覆盖范围
-2. 用 memex_read 读取文件内容理解主题
-3. 按所选方式确定/使用分类维度和标签
-4. 用 memex_tag(file_id, "维度名", "标签值") 为每个文件打标
-   用户指定的维度名和标签值必须严格使用指定名称，新增的需说明
-5. 完成后用 memex_report_confidence 报告置信度
+## 阶段 2 — 试点打标（小步验证）
+
+1. 选 20-30 个代表性文件（含模糊文件）先打标
+2. 以表格形式列给我过目：文件名 | 维度 | 标签 | 一句话理由
+3. 我说"对"才继续全量；说"不对"只改方案，试点标签推倒重来
+4. 我对试点的反馈是最高优先级信息，直接修正你对真实意图的理解
+
+## 阶段 3 — 全量 + 低置信度裁决
+
+1. 全量打标（库大时分批，每批 200 个左右）
+2. 置信度 < 0.85 的文件单独列表：文件名 | 你的犹豫原因
+3. 把这批"拿不准"交我裁决——这批文件就是理解偏差所在，逐个给答案
+4. 用户已指定的维度名和标签值严格使用指定名称，新增需说明
+5. 完成后用 memex_report_confidence 上报
 
 ## 注意
 
-- 先输出你选择的分类方式和维度标签方案，再开始打标
-- 如果用户指定的标签不足以覆盖某些文件，可在该维度下新增标签并说明原因
-- 如果发现合理的分类维度用户未指定，可自行新增
-- 如果发现标签存在同义、歧义、层级混乱等问题，指出并给出修改建议
-- 只为你确认的文件打标，不确定就跳过
-- 每个文件在每个维度下最多标一个标签
-- 如果文件不属于某维度，跳过该维度`
+- 发现标签同义、歧义、层级混乱时，指出并给修改建议
+- 只为确认的文件打标，不确定就放入待裁决清单
+- 每个文件在每个维度下最多一个标签，除非我在阶段 1 明确允许多值`
 }
 
 async function copyPrompt() {
