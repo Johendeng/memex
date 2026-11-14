@@ -1023,8 +1023,39 @@ fn migrate_old_format(bytes: &[u8]) -> Result<BigramIndex> {
         postings: HashMap<String, Vec<Posting>>,
     }
 
-    let old: LegacyIndex = bincode::deserialize(bytes)
-        .context("index.bin deserialization failed (neither new nor legacy format)")?;
+    let old: LegacyIndex = match bincode::deserialize(bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            // Unparseable & not v2/v3 magic: try the .bak before giving up.
+            let bak = index_path()?.with_extension("bin.bak");
+            if bak.exists() {
+                let bak_bytes = std::fs::read(&bak)?;
+                if !bak_bytes.is_empty() && bak_bytes[0] == BigramIndex::VERSION_V3 {
+                    eprintln!(
+                        "index.bin unparseable ({e}); loading index.bin.bak ({} bytes)",
+                        bak_bytes.len()
+                    );
+                    let mut idx: BigramIndex = bincode::deserialize(&bak_bytes[1..])
+                        .context("index.bin.bak deserialization failed")?;
+                    idx.rebuild_file_chunks_map();
+                    if idx.text_offsets.len() != idx.chunks.len() + 1 {
+                        let ct_path = chunks_text_path()?;
+                        let file_size =
+                            std::fs::metadata(&ct_path).map(|m| m.len()).unwrap_or(0);
+                        idx.text_offsets.clear();
+                        idx.text_offsets.resize(idx.chunks.len() + 1, 0);
+                        idx.text_offsets[idx.chunks.len()] = file_size;
+                    }
+                    idx.load_postings_disk()?;
+                    idx.load_delta();
+                    return Ok(idx);
+                }
+            }
+            return Err(anyhow::anyhow!(
+                "index.bin deserialization failed (neither new nor legacy format): {e}"
+            ));
+        }
+    };
 
     eprintln!(
         "migrating legacy index: {} chunks, extracting texts to chunks.text...",
