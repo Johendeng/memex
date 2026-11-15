@@ -2,7 +2,9 @@
 
 > **Local knowledge base + AI memory. Your files, your index, your Agent.**
 
-[![version](https://img.shields.io/badge/version-1.2.0-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)]() [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-orange)]() [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
+🏠 **[Homepage](https://johendeng.github.io/memex-landing/)** | [Quick Start](#quick-start) | [Install](#installation)
+
+[![version](https://img.shields.io/badge/version-1.2.1-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)]() [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-orange)]() [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
 
 [中文](./README.md) | [English](./README.en.md)
 
@@ -139,7 +141,7 @@ Once connected, your Agent can:
 - `memex_find_similar` — find similar documents
 - `memex_remember / recall / forget` — store and retrieve memories
 - `memex_write_note / read_note` — read and write notes
-- `memex_tag` — tag files
+- `memex_tag / untag / edit_tag` — tag, remove or rename file tags
 - `memex_stats` — view knowledge base overview
 
 ---
