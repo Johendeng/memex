@@ -18,7 +18,7 @@ cd "$ROOT"
 
 EXE="target/release/memex.exe"
 OUT="installer/Output"
-GITEE_OWNER="JohenDeng"
+GITEE_OWNER="JohenTeng"
 GITHUB_OWNER="Johendeng"
 REPO="memex"
 
