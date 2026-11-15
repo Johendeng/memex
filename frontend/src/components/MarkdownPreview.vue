@@ -73,7 +73,12 @@
               </div>
             </div>
             <button v-else-if="!tocOpen" class="toc-expand" @click="tocOpen = true" title="展开目录">»</button>
-            <div ref="bodyRef" class="md-body markdown-body" v-html="rendered"></div>
+            <div v-if="content" ref="bodyRef" class="md-body markdown-body" v-html="rendered"></div>
+            <div v-else class="md-empty-state">
+              <div class="md-empty-icon">{{ extIcon }}</div>
+              <div class="md-empty-text">{{ emptyText }}</div>
+              <button class="btn ghost sm" @click="openExternal">📂 打开原文件</button>
+            </div>
           </template>
           <!-- edit mode -->
           <template v-else>
@@ -104,7 +109,7 @@
         </div>
 
         <!-- Find Similar results panel -->
-        <div v-if="similarHits.length" class="similar-panel">
+        <div v-if="similarHits.length" class="similar-panel" :class="{ grow: !content }">
           <div class="similar-title">相似文档（{{ similarHits.length }}）</div>
           <div v-for="(s, i) in similarHits" :key="i" class="similar-hit" @click="$emit('preview', s)">
             <span class="ext-badge" :class="'ext-' + s.ext">{{ s.ext }}</span>
@@ -127,6 +132,8 @@ const props = defineProps({
   file_id: { type: Number, default: 0 },
   // Optional search query: after loading, scroll to & flash the first match.
   query: { type: String, default: '' },
+  // Auto-run find-similar when opened (for non-previewable files).
+  autoSimilar: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close', 'preview'])
 
@@ -152,6 +159,20 @@ const filename = computed(() => {
 })
 const isMarkdown = computed(() => ext.value === 'md' || ext.value === 'markdown')
 const lineCount = computed(() => editContent.value.split('\n').length)
+
+const EXT_ICONS = {
+  pdf: '📄', doc: '📄', docx: '📄', xls: '📊', xlsx: '📊', ppt: '📽', pptx: '📽',
+  png: '🖼', jpg: '🖼', jpeg: '🖼', gif: '🖼', bmp: '🖼', zip: '🗜', rar: '🗜',
+}
+const extIcon = computed(() => EXT_ICONS[ext.value] || '📦')
+const emptyText = computed(() => {
+  const e = ext.value || '文件'
+  return `此类型（${e.toUpperCase()}）暂不支持预览，可打开原文件或查看下方相似文档`
+})
+
+function openExternal() {
+  if (props.path) api.openFile(props.path).catch(() => {})
+}
 
 function renderMd(text) {
   try {
@@ -196,6 +217,9 @@ watch(() => props.path, async (p) => {
     msgType.value = 'err'
   } finally {
     loading.value = false
+    if (p && props.autoSimilar && props.file_id) {
+      nextTick(() => findSimilar())
+    }
   }
 }, { immediate: true })
 
@@ -736,6 +760,24 @@ async function findSimilar() {
   overflow-y: auto;
   flex-shrink: 0;
 }
+/* When the file has no previewable content, the similar list becomes the main content */
+.similar-panel.grow {
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
+}
+/* Empty state (non-previewable file types) */
+.md-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+}
+.md-empty-icon { font-size: 44px; opacity: .5; }
+.md-empty-text { font-size: 13px; color: var(--muted); }
 .similar-title {
   font-size: 11px;
   color: var(--muted);

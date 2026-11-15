@@ -125,7 +125,8 @@
     <MarkdownPreview
       :path="previewPath"
       :file_id="previewFileId"
-      @close="previewPath = ''"
+      :auto-similar="similarMode"
+      @close="closeSimilar"
     />
   </div>
 </template>
@@ -178,6 +179,7 @@ const tourSteps = [
 // ── File preview & similar docs (reuse MarkdownPreview) ──
 const previewPath = ref('')
 const previewFileId = ref(null)
+const similarMode = ref(false)
 const vecReady = ref(false)
 
 const PREVIEWABLE_EXTS = ['md', 'markdown', 'txt', 'csv', 'json', 'html', 'htm', 'xml', 'log', 'yml', 'yaml', 'toml', 'ini', 'conf']
@@ -187,14 +189,20 @@ function isPreviewable(f) {
 }
 function previewFile(f) {
   fileMenu.value = null
+  similarMode.value = false
   previewPath.value = f.path
   previewFileId.value = f.file_id
 }
-async function findSimilarFile(f) {
-  // Reuse the preview modal, which has a built-in "相似文档" button
+function findSimilarFile(f) {
+  // Non-previewable types: modal shows empty state + auto-loaded similar docs
   fileMenu.value = null
+  similarMode.value = true
   previewPath.value = f.path
   previewFileId.value = f.file_id
+}
+function closeSimilar() {
+  previewPath.value = ''
+  similarMode.value = false
 }
 async function checkVectors() {
   try {
