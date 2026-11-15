@@ -127,6 +127,7 @@
       :file_id="previewFileId"
       :auto-similar="similarMode"
       @close="closeSimilar"
+      @preview="onPreviewFromSimilar"
     />
   </div>
 </template>
@@ -203,6 +204,12 @@ function findSimilarFile(f) {
 function closeSimilar() {
   previewPath.value = ''
   similarMode.value = false
+}
+function onPreviewFromSimilar(s) {
+  // Switch the modal to the clicked similar file (keeps similar context)
+  similarMode.value = true
+  previewPath.value = (s.folder_path || '').replace(/[\\/]+$/, '') + '\\' + (s.rel_path || '').replace(/\//g, '\\')
+  previewFileId.value = s.file_id
 }
 async function checkVectors() {
   try {
