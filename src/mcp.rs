@@ -231,13 +231,14 @@ fn handle_tools_list() -> Value {
         },
         {
             "name": "memex_remember",
-            "description": "🧠 存储一条键值记忆（Agent 的长期记忆）。Agent 应主动判断何时保存，无需用户指示。同一 key+namespace 会更新而非重复插入。\n\n【何时主动保存（高门槛）】\n• 用户表达了偏好、约束或工作习惯\n• 做了决策及理由（选 A 不选 B，为什么）\n• 解决了非平凡问题（记录方案结论，不是排查过程）\n• 用户透露了环境、项目、团队的关键事实\n• 下次对话需要知道才能有效的上下文\n\n【何时不要保存】\n• 闲聊、临时调试信息、一次性操作\n• 知识库中已有的内容\n• 用户能轻易重新推导的信息\n\n用户显式说\"记住\"/\"保存这个\"时无条件执行。\n对话结束前，简要列出本轮保存的记忆，供用户清理。",
+            "description": "🧠 存储一条键值记忆（Agent 的长期记忆）。Agent 应主动判断何时保存，无需用户指示。同一 key+namespace 会更新而非重复插入。\n\n【何时主动保存（高门槛）】\n• 用户表达了偏好、约束或工作习惯\n• 做了决策及理由（选 A 不选 B，为什么）\n• 解决了非平凡问题（记录方案结论，不是排查过程）\n• 用户透露了环境、项目、团队的关键事实\n• 下次对话需要知道才能有效的上下文\n\n【何时不要保存】\n• 闲聊、临时调试信息、一次性操作\n• 知识库中已有的内容\n• 用户能轻易重新推导的信息\n\n【tags 归类】\n保存时尽量带上 tags（如所属项目名、主题维度），便于用户按维度浏览记忆。例：tags=[\"memex\",\"开发\"]。\n\n用户显式说\"记住\"/\"保存这个\"时无条件执行。\n对话结束前，简要列出本轮保存的记忆，供用户清理。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": {"type": "string", "description": "记忆键名（如 user_preference, project_decision_42）"},
                     "value": {"type": "string", "description": "记忆值"},
                     "namespace": {"type": "string", "description": "命名空间（默认 'default'），用于隔离不同上下文", "default": "default"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "记忆标签/维度（如项目名、主题），便于按维度浏览。也可传逗号分隔字符串"},
                     "note": {"type": "string", "description": "可选备注"}
                 },
                 "required": ["key", "value"]
@@ -772,10 +773,23 @@ fn tool_remember(args: &Value) -> Result<String, String> {
         .unwrap_or("default");
     let note = args.get("note")
         .and_then(|n| n.as_str());
+    // Optional tags: array of strings, or comma/space-separated string
+    let tags: Vec<String> = match args.get("tags") {
+        Some(Value::Array(arr)) => arr.iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Some(Value::String(s)) => s.split([',', '，', ' '])
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
 
     let mut store = memories::MemoryStore::load()
         .map_err(|e| format!("load memories: {e}"))?;
-    let was_update = store.upsert(key, value, namespace, note);
+    let was_update = store.upsert(key, value, namespace, note, &tags);
     store.save()
         .map_err(|e| format!("save memories: {e}"))?;
 
@@ -784,6 +798,7 @@ fn tool_remember(args: &Value) -> Result<String, String> {
         "key": key,
         "namespace": namespace,
         "action": if was_update { "updated" } else { "created" },
+        "tags": tags,
         "at": now(),
         "total_memories": store.memories.len()
     })).unwrap())
@@ -797,29 +812,29 @@ fn tool_recall(args: &Value) -> Result<String, String> {
         .and_then(|q| q.as_str());
     let namespace = args.get("namespace")
         .and_then(|n| n.as_str());
+    let tag = args.get("tag")
+        .and_then(|t| t.as_str());
 
     let store = memories::MemoryStore::load()
         .map_err(|e| format!("load memories: {e}"))?;
 
-    let results: Vec<Value> = if let Some(k) = key {
+    let to_json = |m: &memories::Memory| json!({
+        "key": m.key, "value": m.value, "namespace": m.namespace,
+        "at": m.at, "note": m.note, "tags": m.tags
+    });
+    let results: Vec<Value> = if let Some(t) = tag {
+        // Filter by tag
+        store.by_tag(t, namespace).iter().map(|m| to_json(m)).collect()
+    } else if let Some(k) = key {
         // Exact match by key
         let ns = namespace.unwrap_or("default");
-        store.recall(k, ns).iter().map(|m| json!({
-            "key": m.key, "value": m.value, "namespace": m.namespace,
-            "at": m.at, "note": m.note
-        })).collect()
+        store.recall(k, ns).iter().map(|m| to_json(m)).collect()
     } else if let Some(q) = query {
         // Fuzzy search
-        store.search(q, namespace).iter().map(|m| json!({
-            "key": m.key, "value": m.value, "namespace": m.namespace,
-            "at": m.at, "note": m.note
-        })).collect()
+        store.search(q, namespace).iter().map(|m| to_json(m)).collect()
     } else {
         // List all (optionally filtered by namespace)
-        store.list(namespace).iter().map(|m| json!({
-            "key": m.key, "value": m.value, "namespace": m.namespace,
-            "at": m.at, "note": m.note
-        })).collect()
+        store.list(namespace).iter().map(|m| to_json(m)).collect()
     };
 
     Ok(serde_json::to_string_pretty(&json!({

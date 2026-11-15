@@ -21,6 +21,16 @@
           <button class="btn sm" @click="openKvEditor(null)">+ 新增记忆</button>
           <button class="btn ghost sm" @click="loadKv">刷新</button>
         </div>
+        <div v-if="kvTagSummary.length" class="row" style="flex-wrap:wrap;gap:6px;margin-top:10px">
+          <button class="tag tag-chip" :class="{ on: !kvTagFilter }" @click="kvTagFilter = ''">全部 {{ kvCount }}</button>
+          <button
+            v-for="t in kvTagSummary"
+            :key="t.value"
+            class="tag tag-chip"
+            :class="{ on: kvTagFilter === t.value }"
+            @click="kvTagFilter = kvTagFilter === t.value ? '' : t.value"
+          >{{ t.value }} {{ t.count }}</button>
+        </div>
       </div>
 
       <div v-if="kvLoading" class="empty">加载中…</div>
@@ -39,6 +49,9 @@
             </div>
           </div>
           <div class="kv-value">{{ m.value }}</div>
+          <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:6px" v-if="m.tags && m.tags.length">
+            <span v-for="t in m.tags" :key="t" class="tag on" style="cursor:pointer" title="点击按此标签筛选" @click="kvTagFilter = t">{{ t }}</span>
+          </div>
           <div class="kv-note muted" v-if="m.note">📎 {{ m.note }}</div>
         </div>
       </div>
@@ -84,6 +97,8 @@
             <input class="input" v-model="kvForm.key" placeholder="如：用户偏好-语言" :disabled="!!kvEditOrig" />
             <label class="modal-label">分组</label>
             <input class="input" v-model="kvForm.namespace" placeholder="默认" />
+            <label class="modal-label">标签 <span class="muted" style="font-size:11px">多个标签用逗号分隔，便于按维度浏览</span></label>
+            <input class="input" v-model="kvForm.tags" placeholder="如：memex, 开发" />
             <label class="modal-label">内容</label>
             <textarea class="input" v-model="kvForm.value" rows="4" placeholder="记忆内容…"></textarea>
             <label class="modal-label">备注 <span class="muted" style="font-size:11px">可选补充说明</span></label>
@@ -143,17 +158,32 @@ const kvSearch = ref('')
 const kvEditing = ref(false)
 const kvSaving = ref(false)
 const kvEditOrig = ref(null)
-const kvForm = ref({ key: '', value: '', namespace: 'default', note: '' })
+const kvForm = ref({ key: '', value: '', namespace: 'default', note: '', tags: '' })
 const kvMsg = ref('')
 const kvMsgType = ref('')
+const kvTagFilter = ref('')
+
+const kvTagSummary = computed(() => {
+  const map = new Map()
+  for (const m of kvList.value) {
+    for (const t of (m.tags || [])) map.set(t, (map.get(t) || 0) + 1)
+  }
+  return [...map.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count)
+})
 
 const filteredKv = computed(() => {
-  if (!kvSearch.value) return kvList.value
+  let list = kvList.value
+  if (kvTagFilter.value) {
+    const t = kvTagFilter.value.toLowerCase()
+    list = list.filter(m => (m.tags || []).some(x => x.toLowerCase().includes(t)))
+  }
+  if (!kvSearch.value) return list
   const q = kvSearch.value.toLowerCase()
-  return kvList.value.filter(m =>
+  return list.filter(m =>
     m.key.toLowerCase().includes(q) ||
     m.value.toLowerCase().includes(q) ||
-    (m.namespace || '').toLowerCase().includes(q)
+    (m.namespace || '').toLowerCase().includes(q) ||
+    (m.tags || []).some(x => x.toLowerCase().includes(q))
   )
 })
 
@@ -178,10 +208,10 @@ function openKvEditor(m) {
   kvMsg.value = ''
   if (m) {
     kvEditOrig.value = m
-    kvForm.value = { key: m.key, value: m.value, namespace: m.namespace || 'default', note: m.note || '' }
+    kvForm.value = { key: m.key, value: m.value, namespace: m.namespace || 'default', note: m.note || '', tags: (m.tags || []).join(', ') }
   } else {
     kvEditOrig.value = null
-    kvForm.value = { key: '', value: '', namespace: 'default', note: '' }
+    kvForm.value = { key: '', value: '', namespace: 'default', note: '', tags: '' }
   }
   kvEditing.value = true
 }
@@ -209,7 +239,8 @@ async function saveKv() {
       kvForm.value.key.trim(),
       kvForm.value.value,
       kvForm.value.namespace.trim() || 'default',
-      kvForm.value.note.trim() || null
+      kvForm.value.note.trim() || null,
+      kvForm.value.tags.split(/[,，]/).map(t => t.trim()).filter(Boolean)
     )
     if (r.ok) {
       await loadKv()
@@ -559,4 +590,11 @@ textarea.input {
 .slide-enter-from, .slide-leave-to { transform: translateX(100%); }
 .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* Tag chips */
+.tag-chip {
+  font-size: 11px; padding: 2px 10px; border-radius: 10px;
+  cursor: pointer; font-family: inherit;
+}
+.tag-chip.on { font-weight: 600; }
 </style>

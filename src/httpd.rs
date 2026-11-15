@@ -1459,11 +1459,26 @@ MCP endpoint: `POST {http_url}`
                 .ok_or_else(|| anyhow::anyhow!("missing value"))?;
             let namespace = args.get("namespace").and_then(|v| v.as_str()).unwrap_or("default");
             let note = args.get("note").and_then(|v| v.as_str());
+            let tags: Vec<String> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter().filter_map(|t| t.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }).unwrap_or_default();
             let mut store = crate::memories::MemoryStore::load()
                 .map_err(|e| anyhow::anyhow!("load memories: {e}"))?;
-            let updated = store.upsert(key, value, namespace, note);
+            let updated = store.upsert(key, value, namespace, note, &tags);
             store.save().map_err(|e| anyhow::anyhow!("save memories: {e}"))?;
             serde_json::json!({ "ok": true, "updated": updated, "count": store.memories.len() })
+        }
+        // ---- Memory tag summary (for grouped browsing) ----
+        "cmd_memory_tags" => {
+            let store = crate::memories::MemoryStore::load()
+                .map_err(|e| anyhow::anyhow!("load memories: {e}"))?;
+            let tags: Vec<serde_json::Value> = store.tag_summary().into_iter()
+                .map(|(value, count)| serde_json::json!({ "value": value, "count": count }))
+                .collect();
+            serde_json::json!({ "ok": true, "tags": tags })
         }
         other => serde_json::json!({ "error": format!("unknown cmd: {other}") }),
     })

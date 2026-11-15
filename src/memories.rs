@@ -38,6 +38,9 @@ pub struct Memory {
     pub at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Free-form tags for grouped browsing (e.g. project names, dimensions).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -67,12 +70,16 @@ impl MemoryStore {
     }
 
     /// Upsert a memory by (namespace, key). Returns whether it was an update.
-    pub fn upsert(&mut self, key: &str, value: &str, namespace: &str, note: Option<&str>) -> bool {
+    pub fn upsert(&mut self, key: &str, value: &str, namespace: &str, note: Option<&str>, tags: &[String]) -> bool {
         let at = now();
         if let Some(m) = self.memories.iter_mut().find(|m| m.key == key && m.namespace == namespace) {
             m.value = value.to_string();
             m.at = at;
             m.note = note.map(String::from);
+            // merge tags: keep existing, append new ones (dedup)
+            for t in tags {
+                if !m.tags.contains(t) { m.tags.push(t.clone()); }
+            }
             true
         } else {
             self.memories.push(Memory {
@@ -81,6 +88,7 @@ impl MemoryStore {
                 namespace: namespace.to_string(),
                 at,
                 note: note.map(String::from),
+                tags: tags.to_vec(),
             });
             false
         }
@@ -116,6 +124,28 @@ impl MemoryStore {
         self.memories.iter()
             .filter(|m| namespace.is_none() || m.namespace == namespace.unwrap_or(""))
             .collect()
+    }
+
+    /// Filter by tag (within namespace, or all if None). Substring match.
+    pub fn by_tag(&self, tag: &str, namespace: Option<&str>) -> Vec<&Memory> {
+        let t = tag.to_lowercase();
+        self.memories.iter()
+            .filter(|m| {
+                (namespace.is_none() || m.namespace == namespace.unwrap_or(""))
+                && m.tags.iter().any(|mt| mt.to_lowercase().contains(&t))
+            })
+            .collect()
+    }
+
+    /// All distinct tags with counts (across all memories).
+    pub fn tag_summary(&self) -> Vec<(String, usize)> {
+        let mut map: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for m in &self.memories {
+            for t in &m.tags {
+                *map.entry(t.clone()).or_insert(0) += 1;
+            }
+        }
+        map.into_iter().collect()
     }
 }
 

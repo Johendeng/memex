@@ -101,7 +101,7 @@ export const api = {
   // ---- Agent memory management ----
   memory: {
     list: () => call('cmd_export_memories'),
-    save: (key, value, namespace = 'default', note = null) => call('cmd_save_memory', { key, value, namespace, note }),
+    save: (key, value, namespace = 'default', note = null, tags = []) => call('cmd_save_memory', { key, value, namespace, note, tags }),
     delete: (key, namespace = '') => call('cmd_delete_memory', { key, namespace }),
   },
   notes: {

@@ -93,6 +93,10 @@
               <span class="ext-badge" :class="extClass(f.ext)">{{ f.ext }}</span>
               <span class="file-name">{{ f.filename }}</span>
               <span class="file-path">{{ f.path }}</span>
+              <span class="file-row-actions">
+                <button v-if="isPreviewable(f)" class="hit-action-btn" @click.stop="previewFile(f)" title="预览">👁</button>
+                <button v-if="vecReady" class="hit-action-btn" @click.stop="findSimilarFile(f)" title="查找相似文档">🔗</button>
+              </span>
             </div>
             <div v-if="selectedTag && !tagFiles.length" class="muted" style="padding:20px;text-align:center">无文件</div>
             <div v-if="!selectedTag" class="muted" style="padding:40px 20px;text-align:center">← 点击左侧标签查看关联文件</div>
@@ -109,11 +113,20 @@
     <!-- File context menu -->
     <div v-if="fileMenu" class="ctx-backdrop" @click="fileMenu = null" @contextmenu.prevent="fileMenu = null"></div>
     <div v-if="fileMenu" class="ctx-menu" :style="{ left: fileMenu.x + 'px', top: fileMenu.y + 'px' }">
+      <div class="ctx-item" v-if="isPreviewable(fileMenu.f)" @click="previewFile(fileMenu.f)">👁 预览</div>
+      <div class="ctx-item" v-if="vecReady" @click="findSimilarFile(fileMenu.f)">🔗 查找相似文档</div>
+      <div class="ctx-sep" v-if="isPreviewable(fileMenu.f) || vecReady"></div>
       <div class="ctx-item" @click="ctxOpenFolder">📂 打开所在文件夹</div>
       <div class="ctx-item" @click="ctxCopyPath">📋 复制文件路径</div>
       <div class="ctx-item" @click="ctxCopyName">📋 复制文件名</div>
       <div class="ctx-item" @click="ctxCopyFolder">📋 复制文件夹路径</div>
     </div>
+
+    <MarkdownPreview
+      :path="previewPath"
+      :file_id="previewFileId"
+      @close="previewPath = ''"
+    />
   </div>
 </template>
 
@@ -121,6 +134,7 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { api } from '../api.js'
 import HelpTour from '../components/HelpTour.vue'
+import MarkdownPreview from '../components/MarkdownPreview.vue'
 
 // ── Prompt generator state ──
 const genDims = ref([
@@ -161,10 +175,38 @@ const tourSteps = [
   { selector: '#cls-tag-browser', title: '分类结果浏览', text: 'Agent 完成打标后，这里按维度 → 标签 → 文件三级浏览。点击维度标签页 → 选择标签 → 查看关联文件，双击文件可直接打开。' },
 ]
 
+// ── File preview & similar docs (reuse MarkdownPreview) ──
+const previewPath = ref('')
+const previewFileId = ref(null)
+const vecReady = ref(false)
+
+const PREVIEWABLE_EXTS = ['md', 'markdown', 'txt', 'csv', 'json', 'html', 'htm', 'xml', 'log', 'yml', 'yaml', 'toml', 'ini', 'conf']
+function isPreviewable(f) {
+  const ext = (f.ext || '').replace(/^\./, '').toLowerCase()
+  return PREVIEWABLE_EXTS.includes(ext)
+}
+function previewFile(f) {
+  fileMenu.value = null
+  previewPath.value = f.path
+  previewFileId.value = f.file_id
+}
+async function findSimilarFile(f) {
+  // Reuse the preview modal, which has a built-in "相似文档" button
+  fileMenu.value = null
+  previewPath.value = f.path
+  previewFileId.value = f.file_id
+}
+async function checkVectors() {
+  try {
+    const s = await api.vectorStatus()
+    vecReady.value = !!s.has_vectors
+  } catch (_) { vecReady.value = false }
+}
+
 // ── File context menu ──
 const fileMenu = ref(null)
 function onFileCtx(e, f) {
-  fileMenu.value = { x: e.clientX, y: e.clientY, path: f.path, filename: f.filename }
+  fileMenu.value = { x: e.clientX, y: e.clientY, path: f.path, filename: f.filename, f }
 }
 async function ctxCopy(text) {
   try { await navigator.clipboard.writeText(text) }
@@ -327,6 +369,7 @@ async function copyPrompt() {
 }
 
 onMounted(async () => {
+  checkVectors()
   try {
     const d = await api.tags.dims()
     dims.value = d.dims || []
@@ -526,6 +569,15 @@ onMounted(async () => {
 }
 .file-row:hover { background: var(--bg); }
 .file-row:last-child { border-bottom: none; }
+.file-row-actions { margin-left: auto; display: none; gap: 2px; flex-shrink: 0; }
+.file-row:hover .file-row-actions { display: inline-flex; }
+.hit-action-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 13px; padding: 2px 5px; border-radius: 4px;
+  opacity: .75;
+}
+.hit-action-btn:hover { opacity: 1; background: var(--bg-card); }
+.ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }
 .file-name {
   color: var(--fg);
   font-weight: 500;
