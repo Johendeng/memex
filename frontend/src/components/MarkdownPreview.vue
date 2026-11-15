@@ -131,8 +131,8 @@
                   <div class="sim-snippet" v-html="simSnippet(s)"></div>
                 </div>
                 <span class="sim-actions">
-                  <button class="hit-action-btn" @click.stop="$emit('preview', s)" title="预览">👁</button>
-                  <button class="hit-action-btn" @click.stop="openSimFile(s)" title="打开文件">📂</button>
+                  <button class="hit-action-btn" @click.stop="$emit('preview', s)" title="预览"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+                  <button class="hit-action-btn" @click.stop="openSimFile(s)" title="打开文件"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
                 </span>
               </div>
             </template>
@@ -963,10 +963,12 @@ async function findSimilar() {
 .sim-hit:hover .sim-actions { display: inline-flex; }
 .hit-action-btn {
   background: none; border: none; cursor: pointer;
-  font-size: 13px; padding: 2px 5px; border-radius: 4px;
-  opacity: .75;
+  color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; padding: 3px 5px; border-radius: 4px;
 }
-.hit-action-btn:hover { opacity: 1; background: var(--bg); }
+.hit-action-btn:hover { color: var(--accent); background: var(--bg-card); }
+.hit-action-btn svg { display: block; }
 
 /* Similar-file context menu */
 .sim-ctx-backdrop { position: fixed; inset: 0; z-index: 90; }

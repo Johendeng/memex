@@ -78,8 +78,8 @@
           <span class="ext-badge" :class="'ext-' + h.ext">{{ h.ext }}</span>
           <span class="hit-name" :title="fullPath(h)">{{ fullPath(h) }}</span>
           <div class="hit-actions">
-            <button v-if="isPreviewable(h)" class="hit-action-btn" @click.stop="previewHit(h)" title="预览">👁</button>
-            <button v-if="vecReady" class="hit-action-btn" @click.stop="findSimilar(h)" title="查找相似文档">🔗</button>
+            <button v-if="isPreviewable(h)" class="hit-action-btn" @click.stop="previewHit(h)" title="预览"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            <button v-if="vecReady" class="hit-action-btn" @click.stop="findSimilar(h)" title="查找相似文档"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
             <span class="hit-score" :title="'原始评分 ' + h.rank.toFixed(3)">{{ normScore(h) }}%</span>
           </div>
           <span class="hit-meta">chunk {{ h.chunk_seq }}</span>
@@ -570,10 +570,14 @@ function toggleHybrid() { hybrid.value = !hybrid.value }
   border: none;
   color: var(--muted);
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 3px 6px;
   border-radius: 4px;
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
+.hit-action-btn svg { display: block; }
 .hit-action-btn:hover {
   color: var(--accent);
   background: rgba(245,158,11,.12);

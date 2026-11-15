@@ -94,8 +94,8 @@
               <span class="file-name">{{ f.filename }}</span>
               <span class="file-path">{{ f.path }}</span>
               <span class="file-row-actions">
-                <button v-if="isPreviewable(f)" class="hit-action-btn" @click.stop="previewFile(f)" title="预览">👁</button>
-                <button v-if="vecReady" class="hit-action-btn" @click.stop="findSimilarFile(f)" title="查找相似文档">🔗</button>
+                <button v-if="isPreviewable(f)" class="hit-action-btn" @click.stop="previewFile(f)" title="预览"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+                <button v-if="vecReady" class="hit-action-btn" @click.stop="findSimilarFile(f)" title="查找相似文档"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
               </span>
             </div>
             <div v-if="selectedTag && !tagFiles.length" class="muted" style="padding:20px;text-align:center">无文件</div>
@@ -588,10 +588,12 @@ onMounted(async () => {
 .file-row:hover .file-row-actions { display: inline-flex; }
 .hit-action-btn {
   background: none; border: none; cursor: pointer;
-  font-size: 13px; padding: 2px 5px; border-radius: 4px;
-  opacity: .75;
+  color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; padding: 3px 5px; border-radius: 4px;
 }
-.hit-action-btn:hover { opacity: 1; background: var(--bg-card); }
+.hit-action-btn:hover { color: var(--accent); background: var(--bg-card); }
+.hit-action-btn svg { display: block; }
 .ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }
 .file-name {
   color: var(--fg);
