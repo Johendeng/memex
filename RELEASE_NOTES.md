@@ -1,3 +1,103 @@
+# v1.2.1 — 智能体记忆体升级 / Agent Memory Power-Up
+
+> Agent 标签管理、记忆打标、预览弹窗 Tab 化、文件编码自动识别——AI 记忆体能力全面进化。
+
+---
+
+## 中文
+
+### 🧠 智能体记忆体（本轮主打）
+
+#### Agent 标签编辑/删除
+- 新增 `memex_untag` MCP 工具：三档删除（单值 / 按维度 / 全删）
+- 新增 `memex_edit_tag` MCP 工具：全库批量改标签值，自动去重合并
+
+#### Agent 记忆打标
+- `memex_remember` 支持 `tags` 归类参数（如 `["memex","开发"]`），更新时自动合并去重
+- `memex_recall` 支持按 `tag` 过滤（大小写不敏感子串匹配）
+- 记忆页新增标签 chip 筛选，编辑器支持逗号分隔输入标签
+
+### ✨ 新特性
+
+#### 预览弹窗 Tab 化
+- 👁 预览 / ✏️ 编辑 / 🔗 相似文档 三 Tab 同级切换，操作层级统一
+- 相似文档列表撑满弹窗主体：文件名 + 目录 + 相似度 + 内容摘要
+- 相似结果跨 Tab 切换保留，不重复请求
+
+#### 相似文件完整操作
+- 单击预览跳转、双击系统默认程序打开
+- 行内 hover 快捷按钮（预览 / 打开文件）
+- 右键菜单：预览、打开文件、打开所在文件夹、复制文件路径 / 文件名 / 文件夹路径
+
+#### 文件编码自动识别
+- UTF-8 / UTF-8 BOM / UTF-16 / GBK 自动检测，GBK 等编码文件不再乱码
+- 保存按原编码回写——不会偷偷把 GBK 文件转成 UTF-8，BOM 保留
+- 编辑器状态栏显示当前文件编码
+
+#### 分类页文件操作
+- 维度分类中文件行支持预览、查找相似文档、右键菜单，与搜索结果一致
+
+### 📦 安装包
+
+| 平台 | 文件 | 说明 |
+|------|------|------|
+| Windows | `Memex-Setup-1.2.1.exe` | Inno Setup 安装程序，x86_64 |
+| macOS | `Memex-macOS-universal.tar.gz` | Universal Binary (Intel + Apple Silicon) |
+| Linux | `Memex-x86_64.AppImage` | 免安装，一个文件通吃所有发行版 |
+
+### 📝 许可
+
+Apache-2.0 · Copyright 2026 JohenDeng
+
+---
+
+## English
+
+### 🧠 Agent Memory (Highlight of This Release)
+
+#### Agent Tag Editing & Deletion
+- New `memex_untag` MCP tool: three-level deletion (single value / by dimension / all)
+- New `memex_edit_tag` MCP tool: bulk rename tag values across the library with auto-dedup
+
+#### Agent Memory Tagging
+- `memex_remember` now accepts `tags` for categorization (e.g. `["memex","dev"]`); updates merge and dedupe automatically
+- `memex_recall` supports filtering by `tag` (case-insensitive substring match)
+- Memories page gains tag-chip filtering and comma-separated tag input in the editor
+
+### ✨ New Features
+
+#### Preview Modal with Tabs
+- 👁 Preview / ✏️ Edit / 🔗 Similar docs — three tabs at the same level, unified interaction
+- Similar docs list fills the modal body: filename + directory + similarity + snippet
+- Similar results persist across tab switches, no duplicate requests
+
+#### Full File Operations on Similar Docs
+- Click to preview, double-click to open with the system default app
+- Inline hover quick actions (preview / open file)
+- Context menu: preview, open file, open containing folder, copy file path / filename / folder path
+
+#### Automatic Text Encoding Detection
+- Auto-detects UTF-8 / UTF-8 BOM / UTF-16 / GBK — no more garbled text
+- Saves back in the original encoding — GBK files are never silently converted to UTF-8, BOMs preserved
+- Editor status bar shows the current encoding
+
+#### File Operations on the Classification Page
+- File rows in tag dimensions now support preview, find-similar, and context menus, matching search results
+
+### 📦 Installers
+
+| Platform | File | Notes |
+|----------|------|-------|
+| Windows | `Memex-Setup-1.2.1.exe` | Inno Setup installer, x86_64 |
+| macOS | `Memex-macOS-universal.tar.gz` | Universal Binary (Intel + Apple Silicon) |
+| Linux | `Memex-x86_64.AppImage` | No installation needed, single file for all distros |
+
+### 📝 License
+
+Apache-2.0 · Copyright 2026 JohenDeng
+
+---
+
 # v1.2.0 — 稳定性与性能优化 / Stability & Performance
 
 > 修复「查找相似」卡死、搜索被索引阻塞、向量生成 CPU 占用过高等关键问题。
