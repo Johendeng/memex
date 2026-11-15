@@ -117,7 +117,7 @@
                 :key="s.file_id"
                 class="sim-hit"
                 :title="simPath(s)"
-                @click="$emit('preview', s)"
+                @click="previewFromSim(s)"
                 @dblclick="openSimFile(s)"
                 @contextmenu.prevent="onSimCtx($event, s)"
               >
@@ -131,7 +131,7 @@
                   <div class="sim-snippet" v-html="simSnippet(s)"></div>
                 </div>
                 <span class="sim-actions">
-                  <button class="hit-action-btn" @click.stop="$emit('preview', s)" title="预览"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+                  <button class="hit-action-btn" @click.stop="previewFromSim(s)" title="预览"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
                   <button class="hit-action-btn" @click.stop="openSimFile(s)" title="打开文件"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
                 </span>
               </div>
@@ -142,6 +142,7 @@
         <!-- status bar -->
         <div v-if="activeTab === 'edit'" class="md-statusbar">
           <span>{{ editContent.length }} 字符 · {{ lineCount }} 行</span>
+          <span class="status-enc" :title="'文件编码：' + fileEncoding">enc: {{ fileEncoding }}</span>
           <span class="status-hint">Ctrl+S 保存 · Esc 取消</span>
         </div>
       </div>
@@ -215,6 +216,11 @@ function openExternal() {
 
 // ---------------- tabs: preview / edit / similar ----------------
 const activeTab = ref('preview')
+const fileEncoding = ref('utf-8')
+// one-shot flag: set when the modal switches to another similar file via the
+// preview button/menu, so watch(path) keeps the preview tab instead of jumping
+// back to the similar tab (autoSimilar)
+const simPreviewJump = ref(false)
 
 function switchTab(t) {
   if (t === 'edit') startEdit()
@@ -258,7 +264,11 @@ async function simCopy(text) {
     document.execCommand('copy'); document.body.removeChild(ta)
   }
 }
-function simMenuPreview() { const s = simMenu.value?.s; simMenu.value = null; if (s) emit('preview', s) }
+function simMenuPreview() { const s = simMenu.value?.s; simMenu.value = null; if (s) previewFromSim(s) }
+function previewFromSim(s) {
+  simPreviewJump.value = true
+  emit('preview', s)
+}
 function simMenuOpen() { const s = simMenu.value?.s; simMenu.value = null; if (s) openSimFile(s) }
 function simMenuOpenFolder() {
   const p = simPath(simMenu.value?.s || {})
@@ -297,20 +307,26 @@ watch(() => props.path, async (p) => {
   mode.value = 'view'
   similarHits.value = []
   msg.value = ''
-  activeTab.value = 'preview'
   simMenu.value = null
+  // one-shot: when the user clicks a similar-file preview button, stay on the
+  // preview tab instead of auto-switching to the similar tab again
+  const fromSimClick = simPreviewJump.value
+  simPreviewJump.value = false
+  activeTab.value = fromSimClick ? 'preview' : 'preview'
   loading.value = true
   try {
     const r = await api.readFile(p)
     if (r.ok) {
       content.value = r.content || ''
       ext.value = r.ext || ''
+      fileEncoding.value = r.encoding || 'utf-8'
       toc.value = isMarkdown.value ? extractToc(content.value) : []
       tagHeadings()
       scrollToHit()
     } else {
       content.value = ''
       ext.value = r.ext || ''
+      fileEncoding.value = 'utf-8'
       msg.value = r.error || '读取失败'
       msgType.value = 'err'
     }
@@ -319,7 +335,7 @@ watch(() => props.path, async (p) => {
     msgType.value = 'err'
   } finally {
     loading.value = false
-    if (p && props.autoSimilar && props.file_id) {
+    if (p && props.autoSimilar && props.file_id && !fromSimClick) {
       activeTab.value = 'similar'
       findSimilar()
     }
@@ -559,7 +575,7 @@ async function save() {
   saving.value = true
   msg.value = ''
   try {
-    await api.saveFile(props.path, editContent.value)
+    await api.saveFile(props.path, editContent.value, fileEncoding.value)
     content.value = editContent.value
     toc.value = isMarkdown.value ? extractToc(content.value) : []
     tagHeadings()
@@ -836,6 +852,7 @@ async function findSimilar() {
   font-family: 'JetBrains Mono', 'Consolas', monospace;
 }
 .md-empty { color: var(--muted); font-style: italic; }
+.status-enc { color: var(--accent); }
 
 /* ext badges reuse same styles as Search */
 .ext-badge {

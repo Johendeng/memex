@@ -48,7 +48,7 @@ export const api = {
   reindex: () => call('cmd_index_run'),
   search: (query, limit = 20, hybrid = false, tagFilter = {}, filters = {}) => call('cmd_search', { query, limit, hybrid, ...tagFilter, ...filters }),
   readFile: (path) => call('cmd_read_file', { path }),
-  saveFile: (path, content) => call('cmd_save_file', { path, content }),
+  saveFile: (path, content, encoding) => call('cmd_save_file', { path, content, encoding: encoding || 'utf-8' }),
   saveImage: (docPath, dataUrl, mime) => call('cmd_save_image', {
     doc_path: docPath,
     data_b64: String(dataUrl).split(',')[1] || '',

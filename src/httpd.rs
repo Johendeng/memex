@@ -1122,16 +1122,16 @@ MCP endpoint: `POST {http_url}`
                         if size > 2_097_152 {
                             serde_json::json!({
                                 "ok": false, "error": "文件过大（超过 2MB）",
-                                "content": "", "ext": ext, "size": size,
+                                "content": "", "ext": ext, "size": size, "encoding": "utf-8",
                             })
                         } else {
-                            let content = String::from_utf8_lossy(&bytes).to_string();
-                            serde_json::json!({ "ok": true, "content": content, "ext": ext, "size": size })
+                            let (content, enc) = decode_text(&bytes);
+                            serde_json::json!({ "ok": true, "content": content, "ext": ext, "size": size, "encoding": enc })
                         }
                     }
                     Err(e) => serde_json::json!({
                         "ok": false, "error": format!("读取失败: {e}"),
-                        "content": "", "ext": ext, "size": 0,
+                        "content": "", "ext": ext, "size": 0, "encoding": "utf-8",
                     }),
                 }
             }
@@ -1139,10 +1139,12 @@ MCP endpoint: `POST {http_url}`
         "cmd_save_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let encoding = args.get("encoding").and_then(|v| v.as_str()).unwrap_or("utf-8");
             if path.is_empty() {
                 return Err(anyhow::anyhow!("empty path"));
             }
-            std::fs::write(path, content)?;
+            let bytes = encode_text(content, encoding)?;
+            std::fs::write(path, bytes)?;
             serde_json::json!({ "ok": true })
         }
         // ---- Save a pasted image next to a doc (editor paste-image) ----
@@ -1482,4 +1484,67 @@ MCP endpoint: `POST {http_url}`
         }
         other => serde_json::json!({ "error": format!("unknown cmd: {other}") }),
     })
+}
+
+// ---- text encoding helpers (preview / edit round-trip) ----
+// Decode bytes for display: BOM first, then strict UTF-8, then GBK fallback.
+// Returns (content, encoding_name) where encoding_name round-trips on save.
+fn decode_text(bytes: &[u8]) -> (String, &'static str) {
+    // UTF-8 BOM
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let (cow, _, _) = encoding_rs::UTF_8.decode(&bytes[3..]);
+        return (cow.into_owned(), "utf-8-bom");
+    }
+    // UTF-16 LE / BE BOM
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let (cow, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
+        return (cow.into_owned(), "utf-16le");
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let (cow, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
+        return (cow.into_owned(), "utf-16be");
+    }
+    // Strict UTF-8 (no BOM, the common case) — keep as-is
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return (s.to_string(), "utf-8");
+    }
+    // Empty / tiny files that are not valid UTF-8 → treat as GBK (no bytes to lose)
+    if bytes.is_empty() {
+        return (String::new(), "utf-8");
+    }
+    // GBK (covers GB2312/GBK/GB18030 for CJK text)
+    let (cow, actual, _) = encoding_rs::GBK.decode(bytes);
+    if actual == encoding_rs::GBK {
+        (cow.into_owned(), "gbk")
+    } else {
+        // decode returned UTF_8 (was actually utf-8 with errors?) — fallback lossy
+        (String::from_utf8_lossy(bytes).into_owned(), "utf-8")
+    }
+}
+
+// Encode content back to the original file encoding.
+fn encode_text(content: &str, encoding: &str) -> Result<Vec<u8>> {
+    match encoding {
+        "utf-8-bom" => {
+            let mut v = vec![0xEF, 0xBB, 0xBF];
+            v.extend_from_slice(content.as_bytes());
+            Ok(v)
+        }
+        "utf-16le" => {
+            let mut v = vec![0xFF, 0xFE];
+            v.extend_from_slice(&content.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>());
+            Ok(v)
+        }
+        "utf-16be" => {
+            let mut v = vec![0xFE, 0xFF];
+            v.extend_from_slice(&content.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>());
+            Ok(v)
+        }
+        "gbk" => {
+            let (cow, _, _) = encoding_rs::GBK.encode(content);
+            Ok(cow.into_owned())
+        }
+        // default: plain UTF-8, no BOM
+        _ => Ok(content.as_bytes().to_vec()),
+    }
 }
