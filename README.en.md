@@ -1,36 +1,32 @@
 # Memex
 
-> **Local knowledge base + AI memory. Your files, your index, your Agent.**
-
-🏠 **[Homepage](https://johendeng.github.io/memex-landing/)** | [Quick Start](#quick-start) | [Install](#installation)
+> **Never organize your files again — find any of them in 3 seconds.**
 
 [![version](https://img.shields.io/badge/version-1.2.1-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)]() [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-orange)]() [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
 
-[中文](./README.md) | [English](./README.en.md)
+🏠 **[Homepage](https://johendeng.github.io/memex-landing/)** | ⬇️ **[Install](#installation)** | 🚀 **[Quick Start](#quick-start)** | 🇨🇳 [中文](./README.md)
 
 ---
 
-## What is Memex
+## Sound familiar?
 
-Your computer is scattered with hundreds of documents — technical notes, project plans, PDF papers, code snippets. You know they're in some folder, but finding the right one takes forever.
+- You *know* that document is "somewhere in that folder" — you just spent ten minutes looking for it
+- Searching "permission design" returns nothing, because the file says "RBAC scheme"
+- Project PDFs, meeting notes, code snippets, screenshots... scattered across a dozen folders, all tracked in your head
+- You tried organizing with folders, then Notion — gave up within a week
 
-**Memex builds these files into a searchable local knowledge base.** No cloud, no online service — all data stays on your machine, the process runs on `127.0.0.1`, no internet, no uploads, no account required.
+If any of these hit home, Memex was built for you.
 
-It also works as an **AI memory** for your Agent (Claude Code / Cursor / Codex / DSH, etc.), letting AI search your files, remember your preferences, and read/write notes. Indexing belongs to the tool; understanding belongs to the Agent.
+**In one sentence: install it, pick your folders, and never think about it again.** Memex indexes every document automatically — after that, any file is a 3-second search away. No organizing, no tagging, no uploading.
 
----
-
-## Why Memex
-
-| Pain Point | How Memex Solves It |
-|------------|---------------------|
-| Too many files, can't find anything | **Full-text inverted index + CJK bigram**, search by fragments, millisecond response |
-| Keyword search not smart enough | **BM25 + semantic vector hybrid retrieval (RRF fusion)**, matches by meaning |
-| PDF / image text not searchable | **pdfium for complex PDF + OCR for images** (optional) |
-| Duplicate files wasting space | **SHA-256 dedup scan**, one-click cleanup |
-| AI assistant doesn't know your files | **MCP protocol integration**, Agent searches your local knowledge base directly |
-| AI assistant has no long-term memory | **KV memory + Markdown notes**, Agent can remember and recall |
-| Don't want data in the cloud | **Fully local**, data never leaves your disk |
+| Your Pain | Memex's Answer |
+|-----------|----------------|
+| Remember content fragments, not filenames | **Full-text inverted index + CJK bigram**, search by fragments, millisecond response |
+| Different wording, zero results | **BM25 + semantic hybrid retrieval**, "permission design" finds the "RBAC scheme" |
+| Text inside PDF / Word / PPT / images isn't searchable | **12 formats parsed natively**, PDFs via pdfium, images via OCR |
+| Your AI assistant can't see your files | **MCP integration** for Claude / Cursor and other Agents — AI searches your knowledge base directly |
+| AI forgets everything between sessions | **AI memory**: your Agent remembers preferences and recalls them across sessions |
+| Don't want data in the cloud | **Fully local**: no internet, no uploads, no account — data never leaves your disk |
 
 ---
 
@@ -52,7 +48,7 @@ txt / md / html / csv / json / docx / xlsx / pptx / pdf / image OCR — 12 forma
 ### 🧠 AI Memory
 - **KV memory**: `namespace + key` structured storage, Agent long-term memory
 - **Markdown notes**: `data/notes/*.md`, indexed into search pool
-- **13 MCP tools**: search, read, remember, notes, tagging, stats
+- **15 MCP tools**: search, read, remember, notes, tagging, tag editing/deletion, stats
 
 ### 🖥️ Desktop Experience
 - WebView2 window / system tray / browser access — three modes
@@ -84,7 +80,7 @@ txt / md / html / csv / json / docx / xlsx / pptx / pdf / image OCR — 12 forma
 2. `chmod +x Memex-x86_64.AppImage`
 3. Double-click to run, or add to application menu
 
-> All platform installers are available at [GitHub Releases](https://github.com/Johendeng/memex/releases).
+> Installers for all platforms: [GitHub Releases](https://github.com/Johendeng/memex/releases) | [Gitee Releases](https://gitee.com/JohenTeng/memex/releases)
 
 ---
 
