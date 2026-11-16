@@ -1,36 +1,32 @@
 # Memex
 
-> **本地知识库 + AI 记忆体。你的文件，你的索引，你的 Agent。**
-
-🏠 **[官网首页](https://johendeng.github.io/memex-landing/)** | [快速上手](#快速上手) | [下载安装](#安装)
+> **文件不用整理，照样 3 秒找到任何一个。**
 
 [![version](https://img.shields.io/badge/version-1.2.1-blue)]() [![license](https://img.shields.io/badge/license-Apache--2.0-green)]() [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-orange)]() [![rust](https://img.shields.io/badge/Rust-2021-orange)]() [![vue](https://img.shields.io/badge/Vue-3-42b883)]()
 
-[中文](./README.md) | [English](./README.en.md)
+🏠 **[官网首页](https://johendeng.github.io/memex-landing/)** | ⬇️ **[下载安装](#安装)** | 🚀 **[快速上手](#快速上手)** | 🌐 [English](./README.en.md)
 
 ---
 
-## Memex 是什么
+## 你是不是也这样？
 
-你的电脑里散落着成百上千个文档——技术笔记、项目方案、PDF 资料、代码片段。你知道它们就在某个文件夹里，但每次找都要翻半天。
+- 明明记得文档「就存在哪个文件夹」，翻了半天还是没找到
+- 搜「权限设计」什么都搜不到——因为文件里写的是「RBAC 方案」
+- 方案 PDF、会议记录、代码片段、截图……散落十几个目录，全靠脑子记
+- 试过用文件夹分类、用 Notion 整理，坚持不到一周就放弃了
 
-**Memex 把这些文件建成可检索的本地知识库。** 不是云盘，不是在线服务——所有数据都在你本机，进程跑在 `127.0.0.1`，不联网，不上传，不需要账号。
+如果你中了任何一条，Memex 就是为你做的。
 
-它还能作为 **AI 记忆体**接入你的 Agent（Claude Code / Cursor / Codex / DSH 等），让 AI 能搜索你的文件、记住你的偏好、读写笔记。索引归工具，理解归 Agent。
+**一句话：装上、选好文件夹，剩下的不用管。** Memex 自动索引你的所有文档，之后任何文件 3 秒搜到——不用整理、不用分类、不用上传。
 
----
-
-## 为什么用 Memex
-
-| 痛点 | Memex 怎么解决 |
-|------|---------------|
-| 文件太多，搜不到 | **全文倒排索引 + 中文 bigram**，只言片语也能搜到，毫秒级响应 |
-| 搜索只有关键词，不够智能 | **BM25 + 语义向量混合检索（RRF 融合）**，意思相近也能匹配 |
-| PDF / 图片里的文字搜不到 | **pdfium 解析复杂 PDF + OCR 识别图片文字**（可选） |
-| 重复文件占空间 | **SHA-256 去重扫描**，一键清理冗余副本 |
-| AI 助手不知道你的文件在哪 | **MCP 协议接入**，Agent 直接搜索你的本地知识库 |
-| AI 助手没有长期记忆 | **KV 记忆 + Markdown 笔记**，Agent 可以记住和回顾 |
-| 不想把数据传到云端 | **纯本地运行**，数据不离开你的硬盘 |
+| 你的痛点 | Memex 的解法 |
+|---------|-------------|
+| 只记得内容片段，记不住文件名 | **全文倒排索引 + 中文 bigram**，只言片语也能搜到，毫秒级响应 |
+| 换个说法就搜不到 | **BM25 + 语义向量混合检索**，搜「权限设计」也能找到「RBAC 方案」 |
+| PDF / Word / PPT / 图片里的字搜不到 | **12 种格式全解析**，PDF 用 pdfium，图片走 OCR |
+| 不想让 AI 助手瞎猜我的文件 | **MCP 接入 Claude / Cursor 等 Agent**，AI 直接搜你的知识库 |
+| AI 聊完就忘，每次都要重新交代 | **AI 记忆体**：Agent 可以记住你的偏好，跨会话召回 |
+| 不想把数据传到云端 | **纯本地**：不联网、不上传、不需要账号，数据不离开你的硬盘 |
 
 ---
 
@@ -84,7 +80,7 @@ txt / md / html / csv / json / docx / xlsx / pptx / pdf / 图片 OCR — 共 12 
 2. `chmod +x Memex-x86_64.AppImage`
 3. 双击运行，或加入应用菜单
 
-> 三平台安装包均从 [GitHub Releases](https://github.com/Johendeng/memex/releases) 获取。
+> 三平台安装包：[GitHub Releases](https://github.com/Johendeng/memex/releases) | [Gitee Releases](https://gitee.com/JohenTeng/memex/releases)（国内下载更快）
 
 ---
 
